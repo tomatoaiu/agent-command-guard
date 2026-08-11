@@ -51,6 +51,9 @@ var findingMessages = map[string]translations{
 	"protected-branch-direct-commit": {"A direct commit to a protected branch was blocked.", "保護ブランチへの直接commitをブロックしました。"},
 	"sensitive-input-redirection":    {"Reading a sensitive file through input redirection was blocked.", "redirectionによる機密ファイル読み取りをブロックしました。"},
 	"protected-redirection":          {"Redirection to an agent configuration or sensitive path was blocked.", "agent設定または機密パスへのredirectionをブロックしました。"},
+	"inline-interpreter-code":        {"Inline code execution with {command} requires review.", "{command}によるインラインコード実行は確認が必要です。"},
+	"indirect-execution-gateway":     {"Indirect command execution through {command} requires review.", "{command}を介した間接的なコマンド実行は確認が必要です。"},
+	"decoded-to-shell":               {"Decoded content piped directly into a shell was blocked.", "復号・展開した内容のshellへの直接実行をブロックしました。"},
 }
 
 func findingMessage(language string, finding Finding) string {

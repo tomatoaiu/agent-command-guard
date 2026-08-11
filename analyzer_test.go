@@ -78,6 +78,13 @@ func TestAnalyzeCorpus(t *testing.T) {
 		{"chmod world writable", "chmod 777 file", Block, "world-writable"},
 		{"parse error safe", "echo 'unterminated", Allow, ""},
 		{"parse error risky", "rm -rf 'unterminated", Review, "shell-parse-risk"},
+		{"python inline", "python3 -c 'print(1)'", Review, "inline-interpreter-code"},
+		{"node inline", "node --eval 'console.log(1)'", Review, "inline-interpreter-code"},
+		{"deno eval", "deno eval 'console.log(1)'", Review, "inline-interpreter-code"},
+		{"normal python script", "python3 scripts/check.py", Allow, ""},
+		{"xargs shell", "printf x | xargs sh -c 'echo $0'", Review, "indirect-execution-gateway"},
+		{"find exec interpreter", "find . -exec python3 script.py {} ;", Review, "indirect-execution-gateway"},
+		{"base64 to shell", "printf ZWNobyB4 | base64 -d | sh", Block, "decoded-to-shell"},
 	}
 
 	for _, test := range tests {

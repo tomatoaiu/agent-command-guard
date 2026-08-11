@@ -124,6 +124,15 @@ func (a *analyzer) inspectCall(call *syntax.CallExpr, depth int) {
 			}
 		}
 	}
+	if inlineInterpreterCode(command, args) {
+		a.add(Review, "inline-interpreter-code", "Inline interpreter code requires review.", command, "")
+	}
+	if command == "xargs" && containsExecutionGateway(args) {
+		a.add(Review, "indirect-execution-gateway", "Indirect command execution through xargs requires review.", command, "")
+	}
+	if command == "find" && findExecutesGateway(args) {
+		a.add(Review, "indirect-execution-gateway", "Indirect command execution through find requires review.", command, "")
+	}
 
 	switch command {
 	case "rm":
@@ -301,6 +310,9 @@ func (a *analyzer) inspectPipeline(pipeline *syntax.BinaryCmd) {
 	if statementHasNetworkSource(pipeline.X) && statementHasShellSink(pipeline.Y) {
 		a.add(Block, "download-to-shell", "networkから取得したデータの直接shell実行をブロックしました。", "pipeline", "")
 	}
+	if statementHasDecoderSource(pipeline.X) && statementHasShellSink(pipeline.Y) {
+		a.add(Block, "decoded-to-shell", "Decoded content piped directly into a shell was blocked.", "pipeline", "")
+	}
 }
 
 func statementHasSensitiveSource(stmt *syntax.Stmt, a *analyzer) bool {
@@ -344,6 +356,96 @@ func statementHasNetworkSource(stmt *syntax.Stmt) bool {
 
 func statementHasShellSink(stmt *syntax.Stmt) bool {
 	return statementHasCommand(stmt, isShell)
+}
+
+func statementHasDecoderSource(stmt *syntax.Stmt) bool {
+	found := false
+	syntax.Walk(stmt, func(node syntax.Node) bool {
+		call, ok := node.(*syntax.CallExpr)
+		if !ok || len(call.Args) == 0 {
+			return true
+		}
+		words := literalWords(call.Args, os.Getenv("HOME"))
+		if len(words) == 0 || !words[0].Known {
+			return true
+		}
+		command := filepath.Base(words[0].Value)
+		args := make([]string, 0, len(words)-1)
+		for _, word := range words[1:] {
+			if !word.Known {
+				return true
+			}
+			args = append(args, word.Value)
+		}
+		if decoderCommand(command, args) {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
+
+func decoderCommand(command string, args []string) bool {
+	switch command {
+	case "base64":
+		return containsAny(args, "-d", "-D", "--decode")
+	case "xxd":
+		return containsAny(args, "-r", "--revert")
+	case "openssl":
+		return containsAny(args, "-d", "-decrypt")
+	case "gzip", "gunzip", "bzip2", "bunzip2", "xz", "unxz":
+		return containsAny(args, "-d", "--decompress") || command == "gunzip" || command == "bunzip2" || command == "unxz"
+	default:
+		return false
+	}
+}
+
+func inlineInterpreterCode(command string, args []string) bool {
+	flags := []string(nil)
+	switch {
+	case regexp.MustCompile(`^python[0-9.]*$`).MatchString(command):
+		flags = []string{"-c"}
+	case command == "node":
+		flags = []string{"-e", "--eval", "-p", "--print"}
+	case command == "ruby":
+		flags = []string{"-e"}
+	case command == "perl":
+		flags = []string{"-e", "-E"}
+	case command == "php":
+		flags = []string{"-r"}
+	case command == "lua" || strings.HasPrefix(command, "lua5."):
+		flags = []string{"-e"}
+	case command == "deno" && firstSubcommand(args) == "eval":
+		return true
+	case command == "bun":
+		flags = []string{"-e", "--eval", "-p", "--print"}
+	}
+	return containsAny(args, flags...)
+}
+
+func containsExecutionGateway(args []string) bool {
+	for _, arg := range args {
+		command := filepath.Base(arg)
+		if isShell(command) || inlineInterpreterName(command) {
+			return true
+		}
+	}
+	return false
+}
+
+func findExecutesGateway(args []string) bool {
+	for i, arg := range args {
+		if (arg == "-exec" || arg == "-execdir" || arg == "-ok" || arg == "-okdir") && i+1 < len(args) {
+			command := filepath.Base(args[i+1])
+			return isShell(command) || inlineInterpreterName(command)
+		}
+	}
+	return false
+}
+
+func inlineInterpreterName(command string) bool {
+	return regexp.MustCompile(`^python[0-9.]*$`).MatchString(command) || containsAny([]string{command}, "node", "ruby", "perl", "php", "lua", "deno", "bun") || strings.HasPrefix(command, "lua5.")
 }
 
 func statementHasCommand(stmt *syntax.Stmt, predicate func(string) bool) bool {
