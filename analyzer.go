@@ -164,8 +164,32 @@ func (a *analyzer) inspectCall(call *syntax.CallExpr, depth int) {
 			a.add(Block, "file-upload", "curlによるファイル送信をブロックしました。", command, "")
 		}
 	case "wget":
-		if containsAny(args, "--post-data", "--post-file") {
+		if containsAny(args, "--post-data", "--post-file", "--body-file") || anyArgPrefix(args, "--post-file=") || anyArgPrefix(args, "--body-file=") {
 			a.add(Block, "file-upload", "wgetによるデータ送信をブロックしました。", command, "")
+		}
+	case "scp", "sftp":
+		if command == "sftp" || anyRemotePath(args) {
+			a.add(Review, "remote-file-transfer", "Remote file transfer requires review.", command, "")
+		}
+	case "rsync":
+		if anyRemotePath(args) {
+			a.add(Review, "remote-file-transfer", "Remote file transfer requires review.", command, "")
+		}
+	case "rclone":
+		if transferSubcommand(args) && anyRemotePath(args) {
+			a.add(Review, "remote-file-transfer", "Remote file transfer requires review.", command, "")
+		}
+	case "aws":
+		if cloudStorageTransfer(args, "s3") {
+			a.add(Review, "cloud-storage-transfer", "Cloud storage transfer requires review.", command, "")
+		}
+	case "gsutil":
+		if containsAny(args, "cp", "mv", "rsync") {
+			a.add(Review, "cloud-storage-transfer", "Cloud storage transfer requires review.", command, "")
+		}
+	case "az":
+		if len(args) >= 3 && args[0] == "storage" && (args[1] == "blob" || args[1] == "file") && containsAny(args[2:], "upload", "upload-batch", "sync") {
+			a.add(Review, "cloud-storage-transfer", "Cloud storage transfer requires review.", command, "")
 		}
 	case "eval", "source", ".":
 		a.add(Review, "dynamic-code-gateway", fmt.Sprintf("%sによる動的コード実行です。", command), command, "")
@@ -207,6 +231,27 @@ func (a *analyzer) inspectCall(call *syntax.CallExpr, depth int) {
 	case "cat", "head", "tail", "less", "more", "grep", "rg", "awk", "base64", "strings", "xxd", "od", "hexdump", "cut", "sort", "uniq", "wc", "jq", "yq", "openssl":
 		a.inspectSensitiveReadArgs(command, args, argKnown)
 	}
+}
+
+func anyRemotePath(args []string) bool {
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "-") {
+			continue
+		}
+		if strings.Contains(arg, "://") || strings.Contains(arg, ":") {
+			return true
+		}
+	}
+	return false
+}
+
+func transferSubcommand(args []string) bool {
+	sub := firstSubcommand(args)
+	return sub == "copy" || sub == "copyto" || sub == "move" || sub == "moveto" || sub == "sync" || sub == "bisync" || sub == "mount"
+}
+
+func cloudStorageTransfer(args []string, service string) bool {
+	return len(args) >= 2 && args[0] == service && (args[1] == "cp" || args[1] == "mv" || args[1] == "sync")
 }
 
 func (a *analyzer) inspectSymlink(args []string, known []bool) {
@@ -1011,13 +1056,13 @@ func hasUnsafeForce(args []string) bool {
 
 func curlUploadsFile(args []string) bool {
 	for i, arg := range args {
-		if (arg == "-d" || arg == "--data" || arg == "-F" || arg == "--form" || arg == "--data-binary") && i+1 < len(args) {
+		if (arg == "-d" || arg == "--data" || arg == "-F" || arg == "--form" || arg == "--data-binary" || arg == "--json" || arg == "-T" || arg == "--upload-file") && i+1 < len(args) {
 			value := args[i+1]
-			if strings.HasPrefix(value, "@") || strings.Contains(value, "=@") {
+			if arg == "-T" || arg == "--upload-file" || strings.HasPrefix(value, "@") || strings.Contains(value, "=@") {
 				return true
 			}
 		}
-		if strings.HasPrefix(arg, "--data-binary=@") || strings.HasPrefix(arg, "--form=") && strings.Contains(arg, "=@") {
+		if strings.HasPrefix(arg, "--upload-file=") || strings.HasPrefix(arg, "--data-binary=@") || strings.HasPrefix(arg, "--json=@") || strings.HasPrefix(arg, "--form=") && strings.Contains(arg, "=@") {
 			return true
 		}
 	}

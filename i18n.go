@@ -54,6 +54,8 @@ var findingMessages = map[string]translations{
 	"inline-interpreter-code":        {"Inline code execution with {command} requires review.", "{command}によるインラインコード実行は確認が必要です。"},
 	"indirect-execution-gateway":     {"Indirect command execution through {command} requires review.", "{command}を介した間接的なコマンド実行は確認が必要です。"},
 	"decoded-to-shell":               {"Decoded content piped directly into a shell was blocked.", "復号・展開した内容のshellへの直接実行をブロックしました。"},
+	"remote-file-transfer":           {"Remote file transfer with {command} requires review.", "{command}によるremoteファイル転送は確認が必要です。"},
+	"cloud-storage-transfer":         {"Cloud storage transfer with {command} requires review.", "{command}によるcloud storage転送は確認が必要です。"},
 }
 
 func findingMessage(language string, finding Finding) string {
