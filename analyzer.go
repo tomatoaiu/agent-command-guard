@@ -182,6 +182,8 @@ func (a *analyzer) inspectCall(call *syntax.CallExpr, depth int) {
 				a.add(Block, "guard-self-protection", "agent設定または機密パスの所有者変更をブロックしました。", command, a.normalizePath(arg))
 			}
 		}
+	case "ln":
+		a.inspectSymlink(args, argKnown)
 	case "tee":
 		a.inspectWriteTargets(command, args, argKnown, false)
 	case "cp", "mv", "install":
@@ -194,6 +196,32 @@ func (a *analyzer) inspectCall(call *syntax.CallExpr, depth int) {
 		}
 	case "cat", "head", "tail", "less", "more", "grep", "rg", "awk", "base64", "strings", "xxd", "od", "hexdump", "cut", "sort", "uniq", "wc", "jq", "yq", "openssl":
 		a.inspectSensitiveReadArgs(command, args, argKnown)
+	}
+}
+
+func (a *analyzer) inspectSymlink(args []string, known []bool) {
+	symlink := false
+	for _, arg := range args {
+		if arg == "--symbolic" || strings.HasPrefix(arg, "-") && !strings.HasPrefix(arg, "--") && strings.Contains(strings.TrimPrefix(arg, "-"), "s") {
+			symlink = true
+			break
+		}
+	}
+	if !symlink {
+		return
+	}
+	for i, arg := range args {
+		if strings.HasPrefix(arg, "-") {
+			continue
+		}
+		if i >= len(known) || !known[i] {
+			a.add(Review, "dynamic-protected-symlink", "symbolic linkの参照先を特定できません。", "ln", "dynamic")
+			return
+		}
+		if a.protectedPath(arg) {
+			a.add(Block, "protected-symlink", "保護対象を指すsymbolic linkの作成をブロックしました。", "ln", a.normalizePath(arg))
+		}
+		return
 	}
 }
 
@@ -704,6 +732,7 @@ func (a *analyzer) normalizePath(path string) string {
 
 func (a *analyzer) protectedPath(path string) bool {
 	normalized := a.normalizePath(path)
+	resolved := resolvePathSymlinks(normalized)
 	protected := []string{
 		filepath.Join(a.home, ".ssh"), filepath.Join(a.home, ".gnupg"),
 		filepath.Join(a.home, ".aws"), filepath.Join(a.home, ".azure"),
@@ -716,7 +745,7 @@ func (a *analyzer) protectedPath(path string) bool {
 		protected = append(protected, configPath)
 	}
 	for _, root := range protected {
-		if normalized == root || strings.HasPrefix(normalized, root+string(filepath.Separator)) {
+		if pathWithin(normalized, root) || pathWithin(resolved, resolvePathSymlinks(root)) {
 			return true
 		}
 	}
@@ -726,8 +755,9 @@ func (a *analyzer) protectedPath(path string) bool {
 
 func (a *analyzer) sensitiveReadPath(path string) bool {
 	normalized := a.normalizePath(path)
+	resolved := resolvePathSymlinks(normalized)
 	base := filepath.Base(normalized)
-	if isSecretBasename(base) {
+	if isSecretBasename(base) || isSecretBasename(filepath.Base(resolved)) {
 		return true
 	}
 	privateRoots := []string{
@@ -736,11 +766,35 @@ func (a *analyzer) sensitiveReadPath(path string) bool {
 		filepath.Join(a.home, ".azure", "accessTokens.json"),
 	}
 	for _, root := range privateRoots {
-		if normalized == root || strings.HasPrefix(normalized, root+string(filepath.Separator)) {
+		if pathWithin(normalized, root) || pathWithin(resolved, resolvePathSymlinks(root)) {
 			return true
 		}
 	}
 	return false
+}
+
+func pathWithin(path, root string) bool {
+	return path == root || strings.HasPrefix(path, root+string(filepath.Separator))
+}
+
+// resolvePathSymlinks resolves the longest existing prefix so that a missing
+// write target below a symlinked directory is still compared by its real path.
+func resolvePathSymlinks(path string) string {
+	path = filepath.Clean(path)
+	current := path
+	suffix := make([]string, 0)
+	for {
+		if resolved, err := filepath.EvalSymlinks(current); err == nil {
+			parts := append([]string{resolved}, suffix...)
+			return filepath.Join(parts...)
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return path
+		}
+		suffix = append([]string{filepath.Base(current)}, suffix...)
+		current = parent
+	}
 }
 
 func (a *analyzer) dangerousDeleteTarget(target string) bool {

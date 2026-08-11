@@ -130,6 +130,36 @@ func TestAgentProtocolMapping(t *testing.T) {
 	}
 }
 
+func TestProtectedPathSymlinks(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	protectedDir := filepath.Join(home, ".codex")
+	if err := os.MkdirAll(protectedDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	protectedFile := filepath.Join(protectedDir, "config.toml")
+	if err := os.WriteFile(protectedFile, []byte("model = 'test'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "config-link")
+	if err := os.Symlink(protectedFile, link); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, test := range []struct {
+		command string
+		rule    string
+	}{
+		{"echo x > " + link, "protected-redirection"},
+		{"ln -sf ~/.codex/config.toml /tmp/config-link", "protected-symlink"},
+	} {
+		result := Analyze(test.command, t.TempDir())
+		if result.Decision != Block || !hasRule(result, test.rule) {
+			t.Errorf("%q: got %s, findings=%+v", test.command, result.Decision, result.Findings)
+		}
+	}
+}
+
 func defaultConfigPathForTest(t *testing.T) string {
 	t.Helper()
 	path, err := DefaultConfigPath()
