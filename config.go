@@ -12,7 +12,12 @@ import (
 )
 
 type Config struct {
-	Rules []Rule `toml:"rules"`
+	Git   GitConfig `toml:"git"`
+	Rules []Rule    `toml:"rules"`
+}
+
+type GitConfig struct {
+	ProtectedBranches []string `toml:"protected_branches"`
 }
 
 type Rule struct {
@@ -62,6 +67,14 @@ func LoadConfig(path string, explicit bool) (Config, error) {
 }
 
 func (c *Config) prepare(baseDir string) error {
+	for _, pattern := range c.Git.ProtectedBranches {
+		if pattern == "" {
+			return errors.New("git.protected_branches must not contain an empty pattern")
+		}
+		if _, err := filepath.Match(pattern, "branch"); err != nil {
+			return fmt.Errorf("invalid protected branch pattern %q: %w", pattern, err)
+		}
+	}
 	seen := make(map[string]bool)
 	for i := range c.Rules {
 		rule := &c.Rules[i]
