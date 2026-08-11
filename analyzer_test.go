@@ -93,6 +93,17 @@ func TestAnalyzeCorpus(t *testing.T) {
 		{"xargs shell", "printf x | xargs sh -c 'echo $0'", Review, "indirect-execution-gateway"},
 		{"find exec interpreter", "find . -exec python3 script.py {} ;", Review, "indirect-execution-gateway"},
 		{"base64 to shell", "printf ZWNobyB4 | base64 -d | sh", Block, "decoded-to-shell"},
+		{"find delete", "find build -type f -delete", Review, "find-delete"},
+		{"safe archive", "tar -czf source.tar.gz ./src", Allow, ""},
+		{"sensitive tar archive", "tar -czf secrets.tar.gz ~/.ssh", Review, "sensitive-archive"},
+		{"sensitive zip archive", "zip -r secrets.zip ~/.aws", Review, "sensitive-archive"},
+		{"docker system prune", "docker system prune -af", Review, "container-prune"},
+		{"podman volume prune", "podman volume prune -f", Review, "container-prune"},
+		{"docker container prune", "docker container prune", Review, "container-prune"},
+		{"kubectl delete", "kubectl delete namespace staging", Review, "infrastructure-delete"},
+		{"terraform destroy", "terraform destroy -auto-approve", Review, "infrastructure-delete"},
+		{"tofu destroy plan", "tofu plan -destroy", Review, "infrastructure-delete"},
+		{"helm uninstall", "helm uninstall production", Review, "infrastructure-delete"},
 	}
 
 	for _, test := range tests {

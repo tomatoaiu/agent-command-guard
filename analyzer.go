@@ -133,6 +133,9 @@ func (a *analyzer) inspectCall(call *syntax.CallExpr, depth int) {
 	if command == "find" && findExecutesGateway(args) {
 		a.add(Review, "indirect-execution-gateway", "Indirect command execution through find requires review.", command, "")
 	}
+	if command == "find" && containsAny(args, "-delete") {
+		a.add(Review, "find-delete", "Deleting files through find requires review.", command, "")
+	}
 
 	switch command {
 	case "rm":
@@ -191,6 +194,26 @@ func (a *analyzer) inspectCall(call *syntax.CallExpr, depth int) {
 		if len(args) >= 3 && args[0] == "storage" && (args[1] == "blob" || args[1] == "file") && containsAny(args[2:], "upload", "upload-batch", "sync") {
 			a.add(Review, "cloud-storage-transfer", "Cloud storage transfer requires review.", command, "")
 		}
+	case "tar", "zip", "7z", "7zz", "ditto", "cpio":
+		if archiveContainsProtectedPath(args, argKnown, a) {
+			a.add(Review, "sensitive-archive", "Archiving an agent configuration or sensitive path requires review.", command, "")
+		}
+	case "docker", "podman":
+		if containerPrune(args) {
+			a.add(Review, "container-prune", "Container cleanup may delete images, volumes, or build data.", command, "")
+		}
+	case "kubectl":
+		if firstSubcommand(args) == "delete" {
+			a.add(Review, "infrastructure-delete", "Infrastructure resource deletion requires review.", command, "")
+		}
+	case "terraform", "tofu":
+		if firstSubcommand(args) == "destroy" || containsAny(args, "-destroy") {
+			a.add(Review, "infrastructure-delete", "Infrastructure resource deletion requires review.", command, "")
+		}
+	case "helm":
+		if sub := firstSubcommand(args); sub == "uninstall" || sub == "delete" {
+			a.add(Review, "infrastructure-delete", "Infrastructure resource deletion requires review.", command, "")
+		}
 	case "eval", "source", ".":
 		a.add(Review, "dynamic-code-gateway", fmt.Sprintf("%sによる動的コード実行です。", command), command, "")
 	case "brew":
@@ -231,6 +254,27 @@ func (a *analyzer) inspectCall(call *syntax.CallExpr, depth int) {
 	case "cat", "head", "tail", "less", "more", "grep", "rg", "awk", "base64", "strings", "xxd", "od", "hexdump", "cut", "sort", "uniq", "wc", "jq", "yq", "openssl":
 		a.inspectSensitiveReadArgs(command, args, argKnown)
 	}
+}
+
+func archiveContainsProtectedPath(args []string, known []bool, a *analyzer) bool {
+	for i, arg := range args {
+		if i >= len(known) || !known[i] || strings.HasPrefix(arg, "-") {
+			continue
+		}
+		if a.protectedPath(arg) {
+			return true
+		}
+	}
+	return false
+}
+
+func containerPrune(args []string) bool {
+	for i := 0; i+1 < len(args); i++ {
+		if (args[i] == "system" || args[i] == "container" || args[i] == "volume" || args[i] == "image" || args[i] == "network" || args[i] == "builder") && args[i+1] == "prune" {
+			return true
+		}
+	}
+	return false
 }
 
 func anyRemotePath(args []string) bool {
