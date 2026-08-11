@@ -118,6 +118,20 @@ Claude Code supports the interactive `ask` decision used for `review` results.
 Both adapters load the same custom rule file automatically, so no hook changes
 are needed when rules are added or edited.
 
+### Output language
+
+Guard messages are emitted in English by default. Set the output language to
+Japanese in the TOML configuration when desired:
+
+```toml
+[output]
+language = "ja"
+```
+
+Supported values are `en` and `ja`. The setting applies to `--explain` output
+and to both Codex and Claude Code hook responses. Stable rule IDs and decision
+values remain language-independent.
+
 ## Custom rules
 
 The guard automatically loads `agent-command-guard/config.toml` from the OS
