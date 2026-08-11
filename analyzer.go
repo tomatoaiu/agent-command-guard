@@ -37,6 +37,7 @@ type Result struct {
 type analyzer struct {
 	cwd               string
 	home              string
+	language          string
 	protectedBranches []string
 	findings          []Finding
 }
@@ -53,11 +54,11 @@ func AnalyzeWithConfig(command, cwd string, config Config) Result {
 		cwd, _ = os.Getwd()
 	}
 	if rule := config.match(command, cwd); rule != nil {
-		message := fmt.Sprintf("カスタムルール %q が一致しました。", rule.ID)
+		message := customRuleMessage(config.Output.Language, rule.ID)
 		finding := Finding{Decision: rule.Action, RuleID: rule.ID, Message: message, Command: strings.TrimSpace(command), Target: cwd}
 		return Result{Decision: rule.Action, Message: message, Findings: []Finding{finding}}
 	}
-	a := &analyzer{cwd: cwd, home: os.Getenv("HOME"), protectedBranches: config.Git.ProtectedBranches}
+	a := &analyzer{cwd: cwd, home: os.Getenv("HOME"), language: config.Output.Language, protectedBranches: config.Git.ProtectedBranches}
 	a.analyzeSource(command, 0)
 	return a.result()
 }
@@ -631,14 +632,16 @@ func (a *analyzer) result() Result {
 	if len(a.findings) > 0 {
 		message = a.findings[0].Message
 		if a.findings[0].Target != "" {
-			message += " 対象: " + a.findings[0].Target
+			message += targetMessage(a.language, a.findings[0].Target)
 		}
 	}
 	return Result{Decision: decision, Message: message, Findings: a.findings}
 }
 
 func (a *analyzer) add(decision Decision, ruleID, message, command, target string) {
-	a.findings = append(a.findings, Finding{Decision: decision, RuleID: ruleID, Message: message, Command: command, Target: target})
+	finding := Finding{Decision: decision, RuleID: ruleID, Message: message, Command: command, Target: target}
+	finding.Message = findingMessage(a.language, finding)
+	a.findings = append(a.findings, finding)
 }
 
 func severity(decision Decision) int {

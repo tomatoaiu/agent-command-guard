@@ -130,6 +130,37 @@ func TestAgentProtocolMapping(t *testing.T) {
 	}
 }
 
+func TestOutputLocalization(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	english := Analyze("rm -rf /", t.TempDir())
+	if english.Message != "Recursive deletion of a protected target was blocked. Target: /" {
+		t.Fatalf("default English message: %q", english.Message)
+	}
+
+	japaneseConfig := Config{Output: OutputConfig{Language: "ja"}}
+	if err := japaneseConfig.prepare(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	japanese := AnalyzeWithConfig("rm -rf /", t.TempDir(), japaneseConfig)
+	if japanese.Message != "保護対象への再帰削除をブロックしました。 対象: /" {
+		t.Fatalf("Japanese message: %q", japanese.Message)
+	}
+
+	customConfig := Config{
+		Output: OutputConfig{Language: "ja"},
+		Rules:  []Rule{{ID: "trusted", Action: Allow, Command: "echo ok"}},
+	}
+	if err := customConfig.prepare(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	custom := AnalyzeWithConfig("echo ok", t.TempDir(), customConfig)
+	if custom.Message != "カスタムルール \"trusted\" が一致しました。" {
+		t.Fatalf("Japanese custom rule message: %q", custom.Message)
+	}
+}
+
 func TestProtectedPathSymlinks(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -265,6 +296,13 @@ func TestInvalidConfig(t *testing.T) {
 	}
 	if _, err := LoadConfig(filepath.Join(dir, "missing.toml"), true); err == nil {
 		t.Fatal("missing explicit config was accepted")
+	}
+	invalidLanguage := filepath.Join(dir, "invalid-language.toml")
+	if err := os.WriteFile(invalidLanguage, []byte("[output]\nlanguage = \"fr\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfig(invalidLanguage, true); err == nil {
+		t.Fatal("unsupported output language was accepted")
 	}
 }
 

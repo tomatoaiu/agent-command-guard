@@ -12,8 +12,13 @@ import (
 )
 
 type Config struct {
-	Git   GitConfig `toml:"git"`
-	Rules []Rule    `toml:"rules"`
+	Git    GitConfig    `toml:"git"`
+	Output OutputConfig `toml:"output"`
+	Rules  []Rule       `toml:"rules"`
+}
+
+type OutputConfig struct {
+	Language string `toml:"language"`
 }
 
 type GitConfig struct {
@@ -67,6 +72,12 @@ func LoadConfig(path string, explicit bool) (Config, error) {
 }
 
 func (c *Config) prepare(baseDir string) error {
+	if c.Output.Language == "" {
+		c.Output.Language = "en"
+	}
+	if c.Output.Language != "en" && c.Output.Language != "ja" {
+		return fmt.Errorf("output.language must be \"en\" or \"ja\", got %q", c.Output.Language)
+	}
 	for _, pattern := range c.Git.ProtectedBranches {
 		if pattern == "" {
 			return errors.New("git.protected_branches must not contain an empty pattern")
