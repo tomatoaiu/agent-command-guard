@@ -35,9 +35,10 @@ type Result struct {
 }
 
 type analyzer struct {
-	cwd      string
-	home     string
-	findings []Finding
+	cwd               string
+	home              string
+	protectedBranches []string
+	findings          []Finding
 }
 
 func Analyze(command, cwd string) Result {
@@ -56,7 +57,7 @@ func AnalyzeWithConfig(command, cwd string, config Config) Result {
 		finding := Finding{Decision: rule.Action, RuleID: rule.ID, Message: message, Command: strings.TrimSpace(command), Target: cwd}
 		return Result{Decision: rule.Action, Message: message, Findings: []Finding{finding}}
 	}
-	a := &analyzer{cwd: cwd, home: os.Getenv("HOME")}
+	a := &analyzer{cwd: cwd, home: os.Getenv("HOME"), protectedBranches: config.Git.ProtectedBranches}
 	a.analyzeSource(command, 0)
 	return a.result()
 }
@@ -342,7 +343,10 @@ func (a *analyzer) inspectGit(args []string, known []bool) {
 	}
 	sub := args[0]
 	rest := args[1:]
+	restKnown := known[1:]
 	switch sub {
+	case "branch":
+		a.inspectGitBranch(rest, restKnown)
 	case "reset":
 		if containsAny(rest, "--hard") {
 			a.add(Block, "git-reset-hard", "git reset --hardをブロックしました。", "git", "")
@@ -356,16 +360,135 @@ func (a *analyzer) inspectGit(args []string, known []bool) {
 			a.add(Review, "git-stash-delete", "git stashの削除です。", "git", "")
 		}
 	case "push":
-		if containsAny(rest, "--delete") {
-			a.add(Block, "git-remote-delete", "remote branch/tagの削除をブロックしました。", "git", "")
-		} else if hasUnsafeForce(rest) {
-			a.add(Review, "git-force-push", "git push --forceです。--force-with-leaseを検討してください。", "git", "")
-		}
+		a.inspectGitPush(rest, restKnown)
 	case "commit":
-		if branch := currentBranch(a.cwd); branch == "main" || branch == "master" {
-			a.add(Block, "main-direct-commit", "main/masterブランチへの直接commitをブロックしました。", "git", branch)
+		if branch := currentBranch(a.cwd); a.protectedBranch(branch) {
+			a.add(Block, "protected-branch-direct-commit", "保護ブランチへの直接commitをブロックしました。", "git", branch)
 		}
 	}
+}
+
+func (a *analyzer) inspectGitBranch(args []string, known []bool) {
+	deleting := containsAny(args, "-d", "-D", "--delete")
+	if !deleting {
+		return
+	}
+	if !allKnown(known) {
+		a.add(Review, "git-dynamic-branch-delete", "削除するローカルブランチを特定できません。", "git", "dynamic")
+		return
+	}
+	for _, branch := range gitOperands(args) {
+		if a.protectedBranch(branch) {
+			a.add(Block, "protected-branch-delete", "保護ブランチの削除をブロックしました。", "git", branch)
+		}
+	}
+}
+
+func (a *analyzer) inspectGitPush(args []string, known []bool) {
+	if !allKnown(known) {
+		a.add(Review, "git-dynamic-push-ref", "push対象のrefを特定できません。", "git", "dynamic")
+		return
+	}
+	operands := gitOperands(args)
+	deleting := containsAny(args, "--delete", "-d")
+	if !deleting {
+		for _, operand := range operands {
+			if strings.HasPrefix(operand, ":") {
+				deleting = true
+			}
+		}
+	}
+
+	targets := pushTargets(operands, deleting)
+	if deleting {
+		if len(targets) == 0 {
+			a.add(Review, "git-remote-delete-unknown", "削除するremote refを特定できません。", "git", "dynamic")
+			return
+		}
+		for _, target := range targets {
+			target = strings.TrimPrefix(target, ":")
+			if target == "tag" || strings.HasPrefix(target, "refs/tags/") {
+				a.add(Review, "git-remote-tag-delete", "remote tagの削除です。", "git", target)
+			} else if a.protectedBranch(strings.TrimPrefix(target, "refs/heads/")) {
+				a.add(Block, "protected-remote-branch-delete", "保護remoteブランチの削除をブロックしました。", "git", target)
+			}
+		}
+		return
+	}
+
+	if len(targets) == 0 {
+		targets = []string{currentBranch(a.cwd)}
+	}
+	for _, target := range targets {
+		target = pushedBranch(target)
+		if target != "" && a.protectedBranch(target) {
+			a.add(Block, "protected-branch-push", "保護ブランチへのpushをブロックしました。", "git", target)
+			return
+		}
+	}
+	if hasUnsafeForce(args) {
+		a.add(Review, "git-force-push", "git push --forceです。--force-with-leaseを検討してください。", "git", "")
+	}
+}
+
+func allKnown(known []bool) bool {
+	for _, value := range known {
+		if !value {
+			return false
+		}
+	}
+	return true
+}
+
+func gitOperands(args []string) []string {
+	result := make([]string, 0, len(args))
+	endOptions := false
+	for _, arg := range args {
+		if !endOptions && arg == "--" {
+			endOptions = true
+			continue
+		}
+		if !endOptions && strings.HasPrefix(arg, "-") {
+			continue
+		}
+		result = append(result, arg)
+	}
+	return result
+}
+
+func pushTargets(operands []string, deleting bool) []string {
+	if len(operands) < 2 {
+		return nil
+	}
+	targets := operands[1:]
+	if deleting && len(targets) > 1 && targets[0] == "tag" {
+		return []string{"refs/tags/" + targets[1]}
+	}
+	return targets
+}
+
+func pushedBranch(refspec string) string {
+	if index := strings.LastIndex(refspec, ":"); index >= 0 {
+		refspec = refspec[index+1:]
+	}
+	return strings.TrimPrefix(refspec, "refs/heads/")
+}
+
+func (a *analyzer) protectedBranch(branch string) bool {
+	if branch == "" {
+		return false
+	}
+	patterns := []string{"main", "master"}
+	if remoteDefault := defaultBranch(a.cwd); remoteDefault != "" {
+		patterns = append(patterns, remoteDefault)
+	}
+	patterns = append(patterns, a.protectedBranches...)
+	for _, pattern := range patterns {
+		if matched, _ := filepath.Match(pattern, branch); matched {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *analyzer) inspectRedirect(redir *syntax.Redirect) {
@@ -573,6 +696,16 @@ func currentBranch(cwd string) string {
 		return ""
 	}
 	return strings.TrimSpace(string(output))
+}
+
+func defaultBranch(cwd string) string {
+	command := exec.Command("/usr/bin/git", "-C", cwd, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+	command.Env = []string{"PATH=/usr/bin:/bin"}
+	output, err := command.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimPrefix(strings.TrimSpace(string(output)), "origin/")
 }
 
 func isShell(command string) bool { return command == "bash" || command == "sh" || command == "zsh" }

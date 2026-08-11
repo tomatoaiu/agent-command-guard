@@ -159,6 +159,23 @@ the built-in policy, so keep broad directory rules limited to locations where
 that behavior is intentional. Rule IDs must be unique; omitted IDs are
 generated as `custom-rule-N`.
 
+### Protected Git branches
+
+`main`, `master`, and the repository's `origin/HEAD` branch are protected by
+default. Add repository-specific branch names or glob patterns in the same
+configuration file:
+
+```toml
+[git]
+protected_branches = ["develop", "release/*"]
+```
+
+The built-in Git policy allows ordinary pushes and local or remote deletion of
+unprotected branches. It blocks pushes, direct commits, and deletion targeting
+protected branches. A plain force push remains `review` on unprotected
+branches, while `--force-with-lease` is allowed. Remote tag deletion and a
+remote deletion whose target cannot be determined remain `review`.
+
 ## Development
 
 ```sh

