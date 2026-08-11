@@ -1,0 +1,25 @@
+min_version = "2026.8.4"
+
+[tools]
+go = "1.25.4"
+
+[tasks.test]
+description = "Run the test suite"
+run = "go test ./..."
+
+[tasks.vet]
+description = "Run Go static analysis"
+run = "go vet ./..."
+
+[tasks.build]
+description = "Build the command"
+run = "go build ./..."
+
+[tasks.check]
+description = "Run formatting, tests, vet, and build checks"
+depends = ["test", "vet", "build"]
+run = "test -z \"$(gofmt -l .)\""
+
+[tasks.fuzz]
+description = "Run the analyzer fuzz target"
+run = "go test -run=^$ -fuzz=FuzzAnalyzeNeverPanics -fuzztime=10s"
