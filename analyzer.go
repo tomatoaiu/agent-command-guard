@@ -189,12 +189,18 @@ func (a *analyzer) inspectCall(call *syntax.CallExpr, depth int) {
 	case "sed":
 		if containsAny(args, "-i", "--in-place") || anyArgPrefix(args, "-i") || anyArgPrefix(args, "--in-place=") {
 			a.inspectWriteTargets(command, args, argKnown, false)
+		} else {
+			a.inspectSensitiveReadArgs(command, args, argKnown)
 		}
-	case "cat", "head", "tail", "less", "more":
-		for i, arg := range args {
-			if i < len(argKnown) && argKnown[i] && a.sensitiveReadPath(arg) {
-				a.add(Block, "sensitive-shell-read", "shell経由の機密ファイル読み取りをブロックしました。", command, a.normalizePath(arg))
-			}
+	case "cat", "head", "tail", "less", "more", "grep", "rg", "awk", "base64", "strings", "xxd", "od", "hexdump", "cut", "sort", "uniq", "wc", "jq", "yq", "openssl":
+		a.inspectSensitiveReadArgs(command, args, argKnown)
+	}
+}
+
+func (a *analyzer) inspectSensitiveReadArgs(command string, args []string, known []bool) {
+	for i, arg := range args {
+		if i < len(known) && known[i] && a.sensitiveReadPath(arg) {
+			a.add(Block, "sensitive-shell-read", "shell経由の機密ファイル読み取りをブロックしました。", command, a.normalizePath(arg))
 		}
 	}
 }
@@ -567,6 +573,12 @@ func (a *analyzer) protectedBranch(branch string) bool {
 
 func (a *analyzer) inspectRedirect(redir *syntax.Redirect) {
 	switch redir.Op {
+	case syntax.RdrIn, syntax.RdrInOut:
+		word := evalWord(redir.Word, a.home)
+		if word.Known && a.sensitiveReadPath(word.Value) {
+			a.add(Block, "sensitive-input-redirection", "redirectionによる機密ファイル読み取りをブロックしました。", "redirect", a.normalizePath(word.Value))
+		}
+		return
 	case syntax.RdrOut, syntax.AppOut, syntax.ClbOut, syntax.RdrAll, syntax.AppAll:
 	default:
 		return
