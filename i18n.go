@@ -56,6 +56,10 @@ var findingMessages = map[string]translations{
 	"decoded-to-shell":               {"Decoded content piped directly into a shell was blocked.", "復号・展開した内容のshellへの直接実行をブロックしました。"},
 	"remote-file-transfer":           {"Remote file transfer with {command} requires review.", "{command}によるremoteファイル転送は確認が必要です。"},
 	"cloud-storage-transfer":         {"Cloud storage transfer with {command} requires review.", "{command}によるcloud storage転送は確認が必要です。"},
+	"find-delete":                    {"Deleting files through find requires review.", "findによるファイル削除は確認が必要です。"},
+	"sensitive-archive":              {"Archiving an agent configuration or sensitive path requires review.", "agent設定または機密パスのアーカイブ作成は確認が必要です。"},
+	"container-prune":                {"Container cleanup may delete images, volumes, or build data.", "コンテナのクリーンアップによりimage、volume、build dataが削除される可能性があります。"},
+	"infrastructure-delete":          {"Infrastructure resource deletion requires review.", "インフラリソースの削除は確認が必要です。"},
 }
 
 func findingMessage(language string, finding Finding) string {
