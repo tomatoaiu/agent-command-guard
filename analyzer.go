@@ -389,17 +389,21 @@ func (a *analyzer) inspectGitPush(args []string, known []bool) {
 		a.add(Review, "git-dynamic-push-ref", "push対象のrefを特定できません。", "git", "dynamic")
 		return
 	}
-	operands := gitOperands(args)
+	parsed := parseGitPushArgs(args)
+	if parsed.bulk {
+		a.add(Block, "protected-branch-bulk-push", "保護ブランチを含み得る一括pushをブロックしました。", "git", "all")
+		return
+	}
 	deleting := containsAny(args, "--delete", "-d")
 	if !deleting {
-		for _, operand := range operands {
-			if strings.HasPrefix(operand, ":") {
+		for _, refspec := range parsed.refspecs {
+			if strings.HasPrefix(refspec, ":") {
 				deleting = true
 			}
 		}
 	}
 
-	targets := pushTargets(operands, deleting)
+	targets := pushTargets(parsed.refspecs, deleting)
 	if deleting {
 		if len(targets) == 0 {
 			a.add(Review, "git-remote-delete-unknown", "削除するremote refを特定できません。", "git", "dynamic")
@@ -420,14 +424,83 @@ func (a *analyzer) inspectGitPush(args []string, known []bool) {
 		targets = []string{currentBranch(a.cwd)}
 	}
 	for _, target := range targets {
-		target = pushedBranch(target)
+		target = pushedBranch(target, currentBranch(a.cwd))
 		if target != "" && a.protectedBranch(target) {
 			a.add(Block, "protected-branch-push", "保護ブランチへのpushをブロックしました。", "git", target)
 			return
 		}
 	}
-	if hasUnsafeForce(args) {
+	if hasUnsafeForce(args) || hasForcedRefspec(parsed.refspecs) {
 		a.add(Review, "git-force-push", "git push --forceです。--force-with-leaseを検討してください。", "git", "")
+	}
+}
+
+func hasForcedRefspec(refspecs []string) bool {
+	for _, refspec := range refspecs {
+		if strings.HasPrefix(refspec, "+") {
+			return true
+		}
+	}
+	return false
+}
+
+type gitPushArgs struct {
+	refspecs []string
+	bulk     bool
+}
+
+func parseGitPushArgs(args []string) gitPushArgs {
+	operands := make([]string, 0, len(args))
+	repositoryOption := false
+	endOptions := false
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if !endOptions && arg == "--" {
+			endOptions = true
+			continue
+		}
+		if !endOptions {
+			if arg == "--all" || arg == "--mirror" {
+				return gitPushArgs{bulk: true}
+			}
+			if arg == "--repo" {
+				repositoryOption = true
+				if i+1 < len(args) {
+					i++
+				}
+				continue
+			}
+			if strings.HasPrefix(arg, "--repo=") {
+				repositoryOption = true
+				continue
+			}
+			if pushOptionTakesValue(arg) {
+				if i+1 < len(args) {
+					i++
+				}
+				continue
+			}
+			if strings.HasPrefix(arg, "-") {
+				continue
+			}
+		}
+		operands = append(operands, arg)
+	}
+	if repositoryOption {
+		return gitPushArgs{refspecs: operands}
+	}
+	if len(operands) < 2 {
+		return gitPushArgs{}
+	}
+	return gitPushArgs{refspecs: operands[1:]}
+}
+
+func pushOptionTakesValue(arg string) bool {
+	switch arg {
+	case "--receive-pack", "--exec", "-o", "--push-option":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -456,20 +529,21 @@ func gitOperands(args []string) []string {
 	return result
 }
 
-func pushTargets(operands []string, deleting bool) []string {
-	if len(operands) < 2 {
-		return nil
-	}
-	targets := operands[1:]
+func pushTargets(refspecs []string, deleting bool) []string {
+	targets := refspecs
 	if deleting && len(targets) > 1 && targets[0] == "tag" {
 		return []string{"refs/tags/" + targets[1]}
 	}
 	return targets
 }
 
-func pushedBranch(refspec string) string {
+func pushedBranch(refspec, current string) string {
+	refspec = strings.TrimPrefix(refspec, "+")
 	if index := strings.LastIndex(refspec, ":"); index >= 0 {
 		refspec = refspec[index+1:]
+	}
+	if refspec == "HEAD" || refspec == "@" {
+		refspec = current
 	}
 	return strings.TrimPrefix(refspec, "refs/heads/")
 }

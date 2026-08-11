@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 )
@@ -48,9 +49,15 @@ func TestAnalyzeCorpus(t *testing.T) {
 		{"git global reset hard", "git -C /tmp/repo reset --hard", Block, "git-reset-hard"},
 		{"git clean force", "git clean -fd", Review, "git-clean-force"},
 		{"git force push", "git push --force origin feature", Review, "git-force-push"},
+		{"git plus force push", "git push origin +feature", Review, "git-force-push"},
 		{"feature push", "git push origin feature", Allow, ""},
 		{"protected push", "git push origin main", Block, "protected-branch-push"},
 		{"protected destination push", "git push origin HEAD:master", Block, "protected-branch-push"},
+		{"protected plus push", "git push origin +main", Block, "protected-branch-push"},
+		{"protected push option value", "git push -o ci.skip origin main", Block, "protected-branch-push"},
+		{"protected repo option push", "git push --repo origin main", Block, "protected-branch-push"},
+		{"bulk push", "git push --all origin", Block, "protected-branch-bulk-push"},
+		{"mirror push", "git push --mirror origin", Block, "protected-branch-bulk-push"},
 		{"feature remote delete", "git push origin --delete feature", Allow, ""},
 		{"feature remote colon delete", "git push origin :feature", Allow, ""},
 		{"protected remote delete", "git push origin --delete main", Block, "protected-remote-branch-delete"},
@@ -79,6 +86,20 @@ func TestAnalyzeCorpus(t *testing.T) {
 				t.Fatalf("missing rule %q; findings=%+v", test.rule, result.Findings)
 			}
 		})
+	}
+}
+
+func TestProtectedCurrentBranchPush(t *testing.T) {
+	repo := t.TempDir()
+	command := exec.Command("git", "init", "-b", "main", repo)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, output)
+	}
+	for _, source := range []string{"git push origin HEAD", "git push origin @"} {
+		result := Analyze(source, repo)
+		if result.Decision != Block || !hasRule(result, "protected-branch-push") {
+			t.Errorf("%q: got %s, findings=%+v", source, result.Decision, result.Findings)
+		}
 	}
 }
 
