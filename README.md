@@ -58,15 +58,106 @@ Use `--agent claude` or `--agent codex` for hook output. A `review` result maps
 to `ask` for Claude and to `deny` for Codex because the Codex hook path does
 not currently provide an interactive review response.
 
-Example adapter:
+### Codex
+
+Codex discovers user hooks at `~/.codex/hooks.json`. Register the binary for
+the `Bash` tool:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^Bash$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "agent-command-guard --agent codex"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Review and trust a newly added or changed hook with `/hooks` in Codex. Codex
+does not support `permissionDecision: "ask"` for `PreToolUse`, so a `review`
+result is deliberately emitted as `deny`.
+
+### Claude Code
+
+Register an adapter in Claude Code's `PreToolUse` hooks for `Bash`:
 
 ```sh
 #!/bin/sh
 exec agent-command-guard --agent claude
 ```
 
-Register that adapter as a `PreToolUse` hook for shell tool calls using your
-agent's supported configuration format.
+For example, the relevant portion of `~/.claude/settings.json` is:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/agent-command-guard.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Claude Code supports the interactive `ask` decision used for `review` results.
+Both adapters load the same custom rule file automatically, so no hook changes
+are needed when rules are added or edited.
+
+## Custom rules
+
+The guard automatically loads `agent-command-guard/config.toml` from the OS
+user configuration directory (`~/.config` on Linux and
+`~/Library/Application Support` on macOS). Use
+`--config /path/to/config.toml` to load a specific file. A missing default file
+is ignored, while a missing or invalid explicitly selected file is an error.
+
+Rules are checked from top to bottom before the built-in policy. The first
+matching rule wins. `command` is a Go regular expression matched against the
+entire trimmed shell input. `directories` contains cwd roots; descendants also
+match. Relative directory paths are resolved from the configuration file's
+directory, and `~/` is supported.
+
+```toml
+# Allow one exact command everywhere. Regex metacharacters must be escaped when
+# needed; single-quoted TOML strings are convenient for regular expressions.
+[[rules]]
+id = "allow-known-git-clean"
+action = "allow"
+command = 'git clean -fd'
+
+# Skip all built-in checks in a disposable workspace and its descendants.
+[[rules]]
+id = "ignore-scratch-workspace"
+action = "allow"
+directories = ["~/src/scratch"]
+
+# Rules can combine both conditions and can also force review or block.
+[[rules]]
+id = "review-deploy-in-production"
+action = "review"
+command = 'deploy .*'
+directories = ["~/src/production"]
+```
+
+Available actions are `allow`, `review`, and `block`. An `allow` rule bypasses
+the built-in policy, so keep broad directory rules limited to locations where
+that behavior is intentional. Rule IDs must be unique; omitted IDs are
+generated as `custom-rule-N`.
 
 ## Development
 
