@@ -17,7 +17,12 @@ type hookInput struct {
 func main() {
 	agent := flag.String("agent", "codex", "hook protocol: codex or claude")
 	explain := flag.Bool("explain", false, "emit the normalized decision for testing")
+	configPath := flag.String("config", "", "TOML policy path (default: user config directory)")
 	flag.Parse()
+	config, err := LoadConfig(*configPath, *configPath != "")
+	if err != nil {
+		fatal(err)
+	}
 
 	data, err := io.ReadAll(os.Stdin)
 	if err != nil {
@@ -28,7 +33,7 @@ func main() {
 		fatal(fmt.Errorf("invalid hook input: %w", err))
 	}
 	command := stringField(input.ToolInput, "command", "cmd")
-	decision := Analyze(command, input.CWD)
+	decision := AnalyzeWithConfig(command, input.CWD, config)
 	if *explain {
 		_ = json.NewEncoder(os.Stdout).Encode(decision)
 		return
@@ -54,16 +59,19 @@ func fatal(err error) {
 }
 
 func emitHookDecision(agent string, decision Result) {
+	_ = json.NewEncoder(os.Stdout).Encode(hookDecision(agent, decision))
+}
+
+func hookDecision(agent string, decision Result) map[string]any {
 	permissionDecision := "deny"
 	if agent == "claude" && decision.Decision == Review {
 		permissionDecision = "ask"
 	}
-	out := map[string]any{
+	return map[string]any{
 		"hookSpecificOutput": map[string]any{
 			"hookEventName":            "PreToolUse",
 			"permissionDecision":       permissionDecision,
 			"permissionDecisionReason": decision.Message,
 		},
 	}
-	_ = json.NewEncoder(os.Stdout).Encode(out)
 }

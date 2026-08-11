@@ -41,11 +41,20 @@ type analyzer struct {
 }
 
 func Analyze(command, cwd string) Result {
+	return AnalyzeWithConfig(command, cwd, Config{})
+}
+
+func AnalyzeWithConfig(command, cwd string, config Config) Result {
 	if strings.TrimSpace(command) == "" {
 		return Result{Decision: Allow}
 	}
 	if cwd == "" {
 		cwd, _ = os.Getwd()
+	}
+	if rule := config.match(command, cwd); rule != nil {
+		message := fmt.Sprintf("カスタムルール %q が一致しました。", rule.ID)
+		finding := Finding{Decision: rule.Action, RuleID: rule.ID, Message: message, Command: strings.TrimSpace(command), Target: cwd}
+		return Result{Decision: rule.Action, Message: message, Findings: []Finding{finding}}
 	}
 	a := &analyzer{cwd: cwd, home: os.Getenv("HOME")}
 	a.analyzeSource(command, 0)
@@ -493,6 +502,9 @@ func (a *analyzer) protectedPath(path string) bool {
 		filepath.Join(a.home, ".claude", "settings.json"), filepath.Join(a.home, ".codex", "hooks"),
 		filepath.Join(a.home, ".codex", "hooks.json"), filepath.Join(a.home, ".codex", "config.toml"),
 		filepath.Join(a.home, ".agents"), filepath.Join(a.home, ".local", "bin", "agent-command-guard"),
+	}
+	if configPath, err := DefaultConfigPath(); err == nil {
+		protected = append(protected, configPath)
 	}
 	for _, root := range protected {
 		if normalized == root || strings.HasPrefix(normalized, root+string(filepath.Separator)) {
