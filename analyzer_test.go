@@ -119,6 +119,65 @@ func TestAnalyzeCorpus(t *testing.T) {
 	}
 }
 
+func TestSafeTempCleanup(t *testing.T) {
+	first, err := os.MkdirTemp("", "sidecars.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := os.MkdirTemp("", "imports.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(first) })
+	t.Cleanup(func() { _ = os.RemoveAll(second) })
+	nested := filepath.Join(first, "nested")
+	if err := os.Mkdir(nested, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if !SafeTempCleanup("rm -rf -- "+first+" "+second, t.TempDir()) {
+		t.Fatal("literal dedicated temporary directories should be auto-approved")
+	}
+
+	repository, err := os.MkdirTemp("", "repository.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(repository) })
+	command := exec.Command("git", "init", repository)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, output)
+	}
+	workingDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range []string{
+		`rm -rf -- "$tmp_dir"`,
+		"rm -rf -- " + os.TempDir(),
+		"rm -rf -- " + filepath.Join(first, "*"),
+		"rm -rf -- " + nested,
+		"rm -rf -- " + repository,
+		"rm -rf -- " + workingDirectory,
+		"test -d " + first + " && rm -rf -- " + first,
+	} {
+		if SafeTempCleanup(source, t.TempDir()) {
+			t.Errorf("unsafe shape was auto-approved: %q", source)
+		}
+	}
+}
+
+func TestPermissionRequestAllow(t *testing.T) {
+	output := permissionRequestAllow()
+	specific := output["hookSpecificOutput"].(map[string]any)
+	if specific["hookEventName"] != "PermissionRequest" {
+		t.Fatalf("hook event: %v", specific["hookEventName"])
+	}
+	decision := specific["decision"].(map[string]any)
+	if decision["behavior"] != "allow" {
+		t.Fatalf("behavior: %v", decision["behavior"])
+	}
+}
+
 func TestProtectedCurrentBranchPush(t *testing.T) {
 	repo := t.TempDir()
 	command := exec.Command("git", "init", "-b", "main", repo)
