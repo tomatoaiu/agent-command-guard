@@ -656,13 +656,17 @@ func (a *analyzer) inspectGitPush(args []string, known []bool, gitCWD string) {
 		}
 		return
 	}
+	// An initial push is necessary to create the first remote branch. Only
+	// bypass protected-branch matching when gitCWD is a valid repository whose
+	// local history is demonstrably empty; non-repositories remain protected.
+	initialPush := emptyGitHistory(gitCWD)
 
 	if len(targets) == 0 {
 		targets = []string{currentBranch(gitCWD)}
 	}
 	for _, target := range targets {
 		target = pushedBranch(target, currentBranch(gitCWD))
-		if target != "" && a.protectedBranch(target, gitCWD) {
+		if !initialPush && target != "" && a.protectedBranch(target, gitCWD) {
 			a.add(Block, "protected-branch-push", "git", target)
 			return
 		}
@@ -1073,6 +1077,18 @@ func currentBranch(cwd string) string {
 		return ""
 	}
 	return strings.TrimSpace(string(output))
+}
+
+func emptyGitHistory(cwd string) bool {
+	repository := exec.Command("/usr/bin/git", "-C", cwd, "rev-parse", "--is-inside-work-tree")
+	repository.Env = []string{"PATH=/usr/bin:/bin"}
+	output, err := repository.Output()
+	if err != nil || strings.TrimSpace(string(output)) != "true" {
+		return false
+	}
+	head := exec.Command("/usr/bin/git", "-C", cwd, "rev-parse", "--verify", "HEAD")
+	head.Env = []string{"PATH=/usr/bin:/bin"}
+	return head.Run() != nil
 }
 
 func defaultBranch(cwd string) string {
