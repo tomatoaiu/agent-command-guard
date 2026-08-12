@@ -85,6 +85,33 @@ Review and trust a newly added or changed hook with `/hooks` in Codex. Codex
 does not support `permissionDecision: "ask"` for `PreToolUse`, so a `review`
 result is deliberately emitted as `deny`.
 
+To skip Codex's separate approval prompt for a narrowly verified temporary
+directory cleanup, register the same binary for `PermissionRequest`:
+
+```json
+{
+  "hooks": {
+    "PermissionRequest": [
+      {
+        "matcher": "^Bash$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "agent-command-guard --permission-request"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+This mode approves only a single literal recursive `rm` invocation whose
+existing directory targets are direct children of the operating system's
+temporary directory. Variables, globs, command chains, symbolic links,
+repository/worktree roots, missing targets, and temporary roots themselves do
+not receive an approval decision and continue through Codex's normal prompt.
+
 ### Claude Code
 
 Register an adapter in Claude Code's `PreToolUse` hooks for `Bash`:

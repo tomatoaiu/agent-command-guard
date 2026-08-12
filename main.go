@@ -16,6 +16,7 @@ type hookInput struct {
 
 func main() {
 	agent := flag.String("agent", "codex", "hook protocol: codex or claude")
+	permissionRequest := flag.Bool("permission-request", false, "approve only structurally safe Codex permission requests")
 	explain := flag.Bool("explain", false, "emit the normalized decision for testing")
 	configPath := flag.String("config", "", "TOML policy path (default: user config directory)")
 	flag.Parse()
@@ -33,6 +34,12 @@ func main() {
 		fatal(fmt.Errorf("invalid hook input: %w", err))
 	}
 	command := stringField(input.ToolInput, "command", "cmd")
+	if *permissionRequest {
+		if SafeTempCleanup(command, input.CWD) {
+			_ = json.NewEncoder(os.Stdout).Encode(permissionRequestAllow())
+		}
+		return
+	}
 	decision := AnalyzeWithConfig(command, input.CWD, config)
 	if *explain {
 		_ = json.NewEncoder(os.Stdout).Encode(decision)
@@ -42,6 +49,17 @@ func main() {
 		return
 	}
 	emitHookDecision(*agent, decision)
+}
+
+func permissionRequestAllow() map[string]any {
+	return map[string]any{
+		"hookSpecificOutput": map[string]any{
+			"hookEventName": "PermissionRequest",
+			"decision": map[string]any{
+				"behavior": "allow",
+			},
+		},
+	}
 }
 
 func stringField(input map[string]any, keys ...string) string {

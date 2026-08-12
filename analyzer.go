@@ -389,6 +389,92 @@ func (a *analyzer) inspectRM(args []string, known []bool) {
 	}
 }
 
+// SafeTempCleanup recognizes the narrow recursive-deletion shape that Codex
+// may auto-approve. It intentionally accepts only one literal rm invocation;
+// normal analysis remains responsible for every broader command shape.
+func SafeTempCleanup(source, cwd string) bool {
+	file, err := syntax.NewParser(syntax.Variant(syntax.LangBash)).Parse(strings.NewReader(source), "permission")
+	if err != nil || len(file.Stmts) != 1 {
+		return false
+	}
+	stmt := file.Stmts[0]
+	call, ok := stmt.Cmd.(*syntax.CallExpr)
+	if !ok || stmt.Negated || stmt.Background || len(stmt.Redirs) != 0 || len(call.Assigns) != 0 || len(call.Args) < 2 {
+		return false
+	}
+	words := literalWords(call.Args, os.Getenv("HOME"))
+	for _, word := range words {
+		if !word.Known {
+			return false
+		}
+	}
+	if filepath.Base(words[0].Value) != "rm" {
+		return false
+	}
+	recursive := false
+	targets := make([]string, 0)
+	endOptions := false
+	for _, word := range words[1:] {
+		arg := word.Value
+		if !endOptions && arg == "--" {
+			endOptions = true
+			continue
+		}
+		if !endOptions && strings.HasPrefix(arg, "-") {
+			if arg == "--recursive" || strings.ContainsAny(strings.TrimPrefix(arg, "-"), "rR") {
+				recursive = true
+			}
+			continue
+		}
+		targets = append(targets, arg)
+	}
+	if !recursive || len(targets) == 0 {
+		return false
+	}
+	for _, target := range targets {
+		if !safeTempDeleteTarget(target) {
+			return false
+		}
+	}
+	return true
+}
+
+func safeTempDeleteTarget(target string) bool {
+	if !filepath.IsAbs(target) || strings.ContainsAny(target, "*?[") {
+		return false
+	}
+	target = filepath.Clean(target)
+	info, err := os.Lstat(target)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return false
+	}
+	resolvedTarget := resolvePathSymlinks(target)
+	tempRoots := []string{os.TempDir(), "/tmp", "/private/tmp"}
+	withinTemp := false
+	for _, root := range tempRoots {
+		root = resolvePathSymlinks(filepath.Clean(root))
+		if target != root && resolvedTarget != root && filepath.Dir(resolvedTarget) == root {
+			withinTemp = true
+			break
+		}
+	}
+	if !withinTemp {
+		return false
+	}
+	if _, err := os.Lstat(filepath.Join(target, ".git")); err == nil {
+		return false
+	}
+	command := exec.Command("/usr/bin/git", "-C", target, "rev-parse", "--show-toplevel")
+	command.Env = []string{"PATH=/usr/bin:/bin"}
+	if output, err := command.Output(); err == nil {
+		repositoryRoot := resolvePathSymlinks(strings.TrimSpace(string(output)))
+		if repositoryRoot == resolvedTarget {
+			return false
+		}
+	}
+	return true
+}
+
 func (a *analyzer) inspectPipeline(pipeline *syntax.BinaryCmd) {
 	leftSource := statementHasSensitiveSource(pipeline.X, a)
 	rightSink := statementHasNetworkOrShellSink(pipeline.Y)
