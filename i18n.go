@@ -49,6 +49,7 @@ var findingMessages = map[string]translations{
 	"protected-branch-push":          {"A push to a protected branch was blocked.", "保護ブランチへのpushをブロックしました。"},
 	"git-force-push":                 {"This is a force push. Consider using --force-with-lease.", "git push --forceです。--force-with-leaseを検討してください。"},
 	"protected-branch-direct-commit": {"A direct commit to a protected branch was blocked.", "保護ブランチへの直接commitをブロックしました。"},
+	"git-dynamic-working-directory":  {"The Git working directory cannot be determined.", "Gitの作業ディレクトリを特定できません。"},
 	"sensitive-input-redirection":    {"Reading a sensitive file through input redirection was blocked.", "redirectionによる機密ファイル読み取りをブロックしました。"},
 	"protected-redirection":          {"Redirection to an agent configuration or sensitive path was blocked.", "agent設定または機密パスへのredirectionをブロックしました。"},
 	"inline-interpreter-code":        {"Inline code execution with {command} requires review.", "{command}によるインラインコード実行は確認が必要です。"},

@@ -133,6 +133,41 @@ func TestProtectedCurrentBranchPush(t *testing.T) {
 	}
 }
 
+func TestGitCWorkingDirectoryBranchDetection(t *testing.T) {
+	root := t.TempDir()
+	mainRepo := filepath.Join(root, "main-repo")
+	featureRepo := filepath.Join(root, "worktrees", "feature-repo")
+	for _, repo := range []string{mainRepo, featureRepo} {
+		if err := os.MkdirAll(filepath.Dir(repo), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		command := exec.Command("git", "init", "-b", "main", repo)
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("git init: %v: %s", err, output)
+		}
+	}
+	command := exec.Command("git", "-C", featureRepo, "switch", "-c", "feature/test")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git switch: %v: %s", err, output)
+	}
+
+	for _, source := range []string{
+		"git -C " + featureRepo + " commit -m test",
+		"git -C " + featureRepo + " push origin HEAD",
+		"git -C " + root + " -C worktrees/feature-repo commit -m test",
+	} {
+		result := Analyze(source, mainRepo)
+		if result.Decision != Allow {
+			t.Errorf("%q: got %s, findings=%+v", source, result.Decision, result.Findings)
+		}
+	}
+
+	result := Analyze("git -C "+mainRepo+" commit -m test", featureRepo)
+	if result.Decision != Block || !hasRule(result, "protected-branch-direct-commit") {
+		t.Errorf("protected -C target: got %s, findings=%+v", result.Decision, result.Findings)
+	}
+}
+
 func TestAgentProtocolMapping(t *testing.T) {
 	if os.Getenv("HOME") == "" {
 		t.Skip("HOME unavailable")
