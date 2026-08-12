@@ -66,7 +66,10 @@ var findingMessages = map[string]translations{
 func findingMessage(language string, finding Finding) string {
 	message, ok := findingMessages[finding.RuleID]
 	if !ok {
-		return finding.Message
+		if language == "ja" {
+			return fmt.Sprintf("安全ルール %q が一致しました。", finding.RuleID)
+		}
+		return fmt.Sprintf("Safety rule %q matched.", finding.RuleID)
 	}
 	text := message.en
 	if language == "ja" {
