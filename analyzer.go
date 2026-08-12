@@ -563,7 +563,7 @@ func literalWords(words []*syntax.Word, home string) []wordValue {
 }
 
 func (a *analyzer) inspectGit(args []string, known []bool) {
-	args, known = stripGitGlobals(args, known)
+	args, known, gitCWD, cwdKnown := stripGitGlobals(args, known, a.cwd)
 	if len(args) == 0 || !known[0] {
 		return
 	}
@@ -586,9 +586,17 @@ func (a *analyzer) inspectGit(args []string, known []bool) {
 			a.add(Review, "git-stash-delete", "git stashの削除です。", "git", "")
 		}
 	case "push":
-		a.inspectGitPush(rest, restKnown)
+		if !cwdKnown {
+			a.add(Review, "git-dynamic-working-directory", "The Git working directory cannot be determined.", "git", "dynamic")
+			return
+		}
+		a.inspectGitPush(rest, restKnown, gitCWD)
 	case "commit":
-		if branch := currentBranch(a.cwd); a.protectedBranch(branch) {
+		if !cwdKnown {
+			a.add(Review, "git-dynamic-working-directory", "The Git working directory cannot be determined.", "git", "dynamic")
+			return
+		}
+		if branch := currentBranch(gitCWD); a.protectedBranch(branch) {
 			a.add(Block, "protected-branch-direct-commit", "保護ブランチへの直接commitをブロックしました。", "git", branch)
 		}
 	}
@@ -610,7 +618,7 @@ func (a *analyzer) inspectGitBranch(args []string, known []bool) {
 	}
 }
 
-func (a *analyzer) inspectGitPush(args []string, known []bool) {
+func (a *analyzer) inspectGitPush(args []string, known []bool, gitCWD string) {
 	if !allKnown(known) {
 		a.add(Review, "git-dynamic-push-ref", "push対象のrefを特定できません。", "git", "dynamic")
 		return
@@ -647,10 +655,10 @@ func (a *analyzer) inspectGitPush(args []string, known []bool) {
 	}
 
 	if len(targets) == 0 {
-		targets = []string{currentBranch(a.cwd)}
+		targets = []string{currentBranch(gitCWD)}
 	}
 	for _, target := range targets {
-		target = pushedBranch(target, currentBranch(a.cwd))
+		target = pushedBranch(target, currentBranch(gitCWD))
 		if target != "" && a.protectedBranch(target) {
 			a.add(Block, "protected-branch-push", "保護ブランチへのpushをブロックしました。", "git", target)
 			return
@@ -1004,11 +1012,33 @@ func (a *analyzer) dangerousDeleteTarget(target string) bool {
 	return false
 }
 
-func stripGitGlobals(args []string, known []bool) ([]string, []bool) {
+func stripGitGlobals(args []string, known []bool, cwd string) ([]string, []bool, string, bool) {
+	cwdKnown := true
 	for len(args) > 0 {
-		if args[0] == "-C" || args[0] == "-c" || args[0] == "--git-dir" || args[0] == "--work-tree" {
+		if args[0] == "-C" {
 			if len(args) < 2 {
-				return nil, nil
+				return nil, nil, cwd, false
+			}
+			if len(known) < 2 || !known[1] {
+				cwdKnown = false
+			} else if cwdKnown {
+				cwd = resolveGitCWD(cwd, args[1])
+			}
+			args, known = args[2:], known[2:]
+			continue
+		}
+		if strings.HasPrefix(args[0], "-C") && len(args[0]) > 2 {
+			if len(known) == 0 || !known[0] {
+				cwdKnown = false
+			} else if cwdKnown {
+				cwd = resolveGitCWD(cwd, strings.TrimPrefix(args[0], "-C"))
+			}
+			args, known = args[1:], known[1:]
+			continue
+		}
+		if args[0] == "-c" || args[0] == "--git-dir" || args[0] == "--work-tree" {
+			if len(args) < 2 {
+				return nil, nil, cwd, cwdKnown
 			}
 			args, known = args[2:], known[2:]
 			continue
@@ -1019,7 +1049,17 @@ func stripGitGlobals(args []string, known []bool) ([]string, []bool) {
 		}
 		break
 	}
-	return args, known
+	return args, known, cwd, cwdKnown
+}
+
+func resolveGitCWD(cwd, path string) string {
+	if path == "" {
+		return cwd
+	}
+	if filepath.IsAbs(path) {
+		return filepath.Clean(path)
+	}
+	return filepath.Clean(filepath.Join(cwd, path))
 }
 
 func currentBranch(cwd string) string {
