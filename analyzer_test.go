@@ -125,11 +125,44 @@ func TestProtectedCurrentBranchPush(t *testing.T) {
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v: %s", err, output)
 	}
+	command = exec.Command("git", "-C", repo, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "initial")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v: %s", err, output)
+	}
 	for _, source := range []string{"git push origin HEAD", "git push origin @"} {
 		result := Analyze(source, repo)
 		if result.Decision != Block || !hasRule(result, "protected-branch-push") {
 			t.Errorf("%q: got %s, findings=%+v", source, result.Decision, result.Findings)
 		}
+	}
+}
+
+func TestInitialPushToProtectedBranchIsAllowed(t *testing.T) {
+	repo := t.TempDir()
+	command := exec.Command("git", "init", "-b", "main", repo)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, output)
+	}
+
+	for _, source := range []string{"git push -u origin main", "git push origin HEAD:main"} {
+		result := Analyze(source, repo)
+		if result.Decision != Allow {
+			t.Errorf("%q: got %s, findings=%+v", source, result.Decision, result.Findings)
+		}
+	}
+
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"add", "README.md"}, {"-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "initial"}} {
+		command := exec.Command("git", append([]string{"-C", repo}, args...)...)
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, output)
+		}
+	}
+	result := Analyze("git push -u origin main", repo)
+	if result.Decision != Block || !hasRule(result, "protected-branch-push") {
+		t.Errorf("push after initial commit: got %s, findings=%+v", result.Decision, result.Findings)
 	}
 }
 
@@ -181,6 +214,10 @@ func TestGitCUsesTargetRepositoryDefaultBranch(t *testing.T) {
 	command := exec.Command("git", "-C", targetRepo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk")
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("set origin HEAD: %v: %s", err, output)
+	}
+	command = exec.Command("git", "-C", targetRepo, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "initial")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v: %s", err, output)
 	}
 
 	for _, source := range []string{
