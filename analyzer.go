@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -65,13 +64,13 @@ func AnalyzeWithConfig(command, cwd string, config Config) Result {
 
 func (a *analyzer) analyzeSource(source string, depth int) {
 	if depth > 4 {
-		a.add(Review, "nested-shell-depth", "ネストしたshellコードが深すぎるため確認が必要です。", "shell", "")
+		a.add(Review, "nested-shell-depth", "shell", "")
 		return
 	}
 	file, err := syntax.NewParser(syntax.Variant(syntax.LangBash)).Parse(strings.NewReader(source), "hook")
 	if err != nil {
 		if containsRiskLexeme(source) {
-			a.add(Review, "shell-parse-risk", "危険語を含むshell構文を安全に解析できませんでした。", "shell", "")
+			a.add(Review, "shell-parse-risk", "shell", "")
 		}
 		return
 	}
@@ -99,7 +98,7 @@ func (a *analyzer) inspectCall(call *syntax.CallExpr, depth int) {
 		words = append(words, evalWord(arg, a.home))
 	}
 	if !words[0].Known {
-		a.add(Review, "dynamic-command-name", "実行するcommand名が動的です。", "dynamic", "")
+		a.add(Review, "dynamic-command-name", "dynamic", "")
 		return
 	}
 	argv := make([]string, len(words))
@@ -120,21 +119,21 @@ func (a *analyzer) inspectCall(call *syntax.CallExpr, depth int) {
 			if index < len(argKnown) && argKnown[index] {
 				a.analyzeSource(args[index], depth+1)
 			} else {
-				a.add(Review, "dynamic-shell-code", "動的なshellコードの実行です。", command, "")
+				a.add(Review, "dynamic-shell-code", command, "")
 			}
 		}
 	}
 	if inlineInterpreterCode(command, args) {
-		a.add(Review, "inline-interpreter-code", "Inline interpreter code requires review.", command, "")
+		a.add(Review, "inline-interpreter-code", command, "")
 	}
 	if command == "xargs" && containsExecutionGateway(args) {
-		a.add(Review, "indirect-execution-gateway", "Indirect command execution through xargs requires review.", command, "")
+		a.add(Review, "indirect-execution-gateway", command, "")
 	}
 	if command == "find" && findExecutesGateway(args) {
-		a.add(Review, "indirect-execution-gateway", "Indirect command execution through find requires review.", command, "")
+		a.add(Review, "indirect-execution-gateway", command, "")
 	}
 	if command == "find" && containsAny(args, "-delete") {
-		a.add(Review, "find-delete", "Deleting files through find requires review.", command, "")
+		a.add(Review, "find-delete", command, "")
 	}
 
 	switch command {
@@ -143,100 +142,100 @@ func (a *analyzer) inspectCall(call *syntax.CallExpr, depth int) {
 	case "unlink":
 		for i, arg := range args {
 			if i < len(argKnown) && argKnown[i] && a.protectedPath(arg) {
-				a.add(Block, "protected-delete", "agent設定または機密パスの削除をブロックしました。", command, a.normalizePath(arg))
+				a.add(Block, "protected-delete", command, a.normalizePath(arg))
 			}
 		}
 	case "git":
 		a.inspectGit(args, argKnown)
 	case "sudo":
-		a.add(Block, "privilege-escalation", "sudoによる権限昇格をブロックしました。", command, "")
+		a.add(Block, "privilege-escalation", command, "")
 	case "osascript", "security", "screencapture", "mkfs", "csrutil", "nvram", "dscl", "networksetup":
-		a.add(Block, "sensitive-system-command", fmt.Sprintf("%sは安全ガードによりブロックされました。", command), command, "")
+		a.add(Block, "sensitive-system-command", command, "")
 	case "shutdown", "reboot", "halt", "poweroff":
-		a.add(Block, "system-shutdown", "システム停止操作をブロックしました。", command, "")
+		a.add(Block, "system-shutdown", command, "")
 	case "dd":
 		if anyArgPrefix(args, "of=") {
-			a.add(Block, "raw-write", "ddによる直接書き込みをブロックしました。", command, "")
+			a.add(Block, "raw-write", command, "")
 		}
 	case "truncate", "shred":
-		a.add(Block, "destructive-file-command", fmt.Sprintf("%sによる破壊的操作をブロックしました。", command), command, "")
+		a.add(Block, "destructive-file-command", command, "")
 	case "nc", "ncat", "netcat":
-		a.add(Block, "raw-network-channel", "nc/netcatによる直接通信をブロックしました。", command, "")
+		a.add(Block, "raw-network-channel", command, "")
 	case "curl":
 		if curlUploadsFile(args) {
-			a.add(Block, "file-upload", "curlによるファイル送信をブロックしました。", command, "")
+			a.add(Block, "file-upload", command, "")
 		}
 	case "wget":
 		if containsAny(args, "--post-data", "--post-file", "--body-file") || anyArgPrefix(args, "--post-file=") || anyArgPrefix(args, "--body-file=") {
-			a.add(Block, "file-upload", "wgetによるデータ送信をブロックしました。", command, "")
+			a.add(Block, "file-upload", command, "")
 		}
 	case "scp", "sftp":
 		if command == "sftp" || anyRemotePath(args) {
-			a.add(Review, "remote-file-transfer", "Remote file transfer requires review.", command, "")
+			a.add(Review, "remote-file-transfer", command, "")
 		}
 	case "rsync":
 		if anyRemotePath(args) {
-			a.add(Review, "remote-file-transfer", "Remote file transfer requires review.", command, "")
+			a.add(Review, "remote-file-transfer", command, "")
 		}
 	case "rclone":
 		if transferSubcommand(args) && anyRemotePath(args) {
-			a.add(Review, "remote-file-transfer", "Remote file transfer requires review.", command, "")
+			a.add(Review, "remote-file-transfer", command, "")
 		}
 	case "aws":
 		if cloudStorageTransfer(args, "s3") {
-			a.add(Review, "cloud-storage-transfer", "Cloud storage transfer requires review.", command, "")
+			a.add(Review, "cloud-storage-transfer", command, "")
 		}
 	case "gsutil":
 		if containsAny(args, "cp", "mv", "rsync") {
-			a.add(Review, "cloud-storage-transfer", "Cloud storage transfer requires review.", command, "")
+			a.add(Review, "cloud-storage-transfer", command, "")
 		}
 	case "az":
 		if len(args) >= 3 && args[0] == "storage" && (args[1] == "blob" || args[1] == "file") && containsAny(args[2:], "upload", "upload-batch", "sync") {
-			a.add(Review, "cloud-storage-transfer", "Cloud storage transfer requires review.", command, "")
+			a.add(Review, "cloud-storage-transfer", command, "")
 		}
 	case "tar", "zip", "7z", "7zz", "ditto", "cpio":
 		if archiveContainsProtectedPath(args, argKnown, a) {
-			a.add(Review, "sensitive-archive", "Archiving an agent configuration or sensitive path requires review.", command, "")
+			a.add(Review, "sensitive-archive", command, "")
 		}
 	case "docker", "podman":
 		if containerPrune(args) {
-			a.add(Review, "container-prune", "Container cleanup may delete images, volumes, or build data.", command, "")
+			a.add(Review, "container-prune", command, "")
 		}
 	case "kubectl":
 		if firstSubcommand(args) == "delete" {
-			a.add(Review, "infrastructure-delete", "Infrastructure resource deletion requires review.", command, "")
+			a.add(Review, "infrastructure-delete", command, "")
 		}
 	case "terraform", "tofu":
 		if firstSubcommand(args) == "destroy" || containsAny(args, "-destroy") {
-			a.add(Review, "infrastructure-delete", "Infrastructure resource deletion requires review.", command, "")
+			a.add(Review, "infrastructure-delete", command, "")
 		}
 	case "helm":
 		if sub := firstSubcommand(args); sub == "uninstall" || sub == "delete" {
-			a.add(Review, "infrastructure-delete", "Infrastructure resource deletion requires review.", command, "")
+			a.add(Review, "infrastructure-delete", command, "")
 		}
 	case "eval", "source", ".":
-		a.add(Review, "dynamic-code-gateway", fmt.Sprintf("%sによる動的コード実行です。", command), command, "")
+		a.add(Review, "dynamic-code-gateway", command, "")
 	case "brew":
 		if firstSubcommand(args) == "uninstall" || firstSubcommand(args) == "remove" || firstSubcommand(args) == "untap" {
-			a.add(Review, "package-removal", "Homebrewパッケージの削除です。", command, "")
+			a.add(Review, "package-removal", command, "")
 		}
 	case "npm", "pnpm":
 		if firstSubcommand(args) == "publish" {
-			a.add(Block, "package-publish", "パッケージ公開をブロックしました。", command, "")
+			a.add(Block, "package-publish", command, "")
 		}
 	case "chmod":
 		if containsAny(args, "777") {
-			a.add(Block, "world-writable", "chmod 777をブロックしました。", command, "")
+			a.add(Block, "world-writable", command, "")
 		}
 		for i, arg := range args {
 			if i < len(argKnown) && argKnown[i] && a.protectedPath(arg) {
-				a.add(Block, "guard-self-protection", "agent設定または機密パスの権限変更をブロックしました。", command, a.normalizePath(arg))
+				a.add(Block, "guard-self-protection", command, a.normalizePath(arg))
 			}
 		}
 	case "chown":
 		for i, arg := range args {
 			if i < len(argKnown) && argKnown[i] && a.protectedPath(arg) {
-				a.add(Block, "guard-self-protection", "agent設定または機密パスの所有者変更をブロックしました。", command, a.normalizePath(arg))
+				a.add(Block, "guard-self-protection", command, a.normalizePath(arg))
 			}
 		}
 	case "ln":
@@ -314,11 +313,11 @@ func (a *analyzer) inspectSymlink(args []string, known []bool) {
 			continue
 		}
 		if i >= len(known) || !known[i] {
-			a.add(Review, "dynamic-protected-symlink", "symbolic linkの参照先を特定できません。", "ln", "dynamic")
+			a.add(Review, "dynamic-protected-symlink", "ln", "dynamic")
 			return
 		}
 		if a.protectedPath(arg) {
-			a.add(Block, "protected-symlink", "保護対象を指すsymbolic linkの作成をブロックしました。", "ln", a.normalizePath(arg))
+			a.add(Block, "protected-symlink", "ln", a.normalizePath(arg))
 		}
 		return
 	}
@@ -327,7 +326,7 @@ func (a *analyzer) inspectSymlink(args []string, known []bool) {
 func (a *analyzer) inspectSensitiveReadArgs(command string, args []string, known []bool) {
 	for i, arg := range args {
 		if i < len(known) && known[i] && a.sensitiveReadPath(arg) {
-			a.add(Block, "sensitive-shell-read", "shell経由の機密ファイル読み取りをブロックしました。", command, a.normalizePath(arg))
+			a.add(Block, "sensitive-shell-read", command, a.normalizePath(arg))
 		}
 	}
 }
@@ -344,7 +343,7 @@ func (a *analyzer) inspectWriteTargets(command string, args []string, known []bo
 	}
 	for _, i := range indices {
 		if i < len(known) && known[i] && a.protectedPath(args[i]) {
-			a.add(Block, "guard-self-protection", "agent設定または機密パスへの書き込みをブロックしました。", command, a.normalizePath(args[i]))
+			a.add(Block, "guard-self-protection", command, a.normalizePath(args[i]))
 		}
 	}
 }
@@ -370,9 +369,9 @@ func (a *analyzer) inspectRM(args []string, known []bool) {
 		for _, index := range targets {
 			if index < len(known) && known[index] {
 				if a.protectedPath(args[index]) {
-					a.add(Block, "protected-delete", "agent設定または機密パスの削除をブロックしました。", "rm", a.normalizePath(args[index]))
+					a.add(Block, "protected-delete", "rm", a.normalizePath(args[index]))
 				} else if isSigningKey(args[index]) {
-					a.add(Review, "signing-key-delete", "署名鍵または証明書の削除です。", "rm", a.normalizePath(args[index]))
+					a.add(Review, "signing-key-delete", "rm", a.normalizePath(args[index]))
 				}
 			}
 		}
@@ -380,12 +379,12 @@ func (a *analyzer) inspectRM(args []string, known []bool) {
 	}
 	for _, index := range targets {
 		if index >= len(known) || !known[index] {
-			a.add(Review, "dynamic-recursive-delete", "再帰削除の対象パスを静的に確定できません。", "rm", "dynamic")
+			a.add(Review, "dynamic-recursive-delete", "rm", "dynamic")
 			continue
 		}
 		target := a.normalizePath(args[index])
 		if a.dangerousDeleteTarget(target) {
-			a.add(Block, "recursive-delete-protected", "保護対象への再帰削除をブロックしました。", "rm", target)
+			a.add(Block, "recursive-delete-protected", "rm", target)
 		}
 	}
 }
@@ -394,13 +393,13 @@ func (a *analyzer) inspectPipeline(pipeline *syntax.BinaryCmd) {
 	leftSource := statementHasSensitiveSource(pipeline.X, a)
 	rightSink := statementHasNetworkOrShellSink(pipeline.Y)
 	if leftSource && rightSink {
-		a.add(Block, "sensitive-pipeline", "機密データを外部送信またはshell実行するpipelineをブロックしました。", "pipeline", "")
+		a.add(Block, "sensitive-pipeline", "pipeline", "")
 	}
 	if statementHasNetworkSource(pipeline.X) && statementHasShellSink(pipeline.Y) {
-		a.add(Block, "download-to-shell", "networkから取得したデータの直接shell実行をブロックしました。", "pipeline", "")
+		a.add(Block, "download-to-shell", "pipeline", "")
 	}
 	if statementHasDecoderSource(pipeline.X) && statementHasShellSink(pipeline.Y) {
-		a.add(Block, "decoded-to-shell", "Decoded content piped directly into a shell was blocked.", "pipeline", "")
+		a.add(Block, "decoded-to-shell", "pipeline", "")
 	}
 }
 
@@ -573,35 +572,35 @@ func (a *analyzer) inspectGit(args []string, known []bool) {
 	switch sub {
 	case "branch":
 		if !cwdKnown {
-			a.add(Review, "git-dynamic-working-directory", "The Git working directory cannot be determined.", "git", "dynamic")
+			a.add(Review, "git-dynamic-working-directory", "git", "dynamic")
 			return
 		}
 		a.inspectGitBranch(rest, restKnown, gitCWD)
 	case "reset":
 		if containsAny(rest, "--hard") {
-			a.add(Block, "git-reset-hard", "git reset --hardをブロックしました。", "git", "")
+			a.add(Block, "git-reset-hard", "git", "")
 		}
 	case "clean":
 		if hasForceFlag(rest) {
-			a.add(Review, "git-clean-force", "git cleanによる未追跡ファイル削除です。", "git", "")
+			a.add(Review, "git-clean-force", "git", "")
 		}
 	case "stash":
 		if len(rest) > 0 && (rest[0] == "drop" || rest[0] == "clear") {
-			a.add(Review, "git-stash-delete", "git stashの削除です。", "git", "")
+			a.add(Review, "git-stash-delete", "git", "")
 		}
 	case "push":
 		if !cwdKnown {
-			a.add(Review, "git-dynamic-working-directory", "The Git working directory cannot be determined.", "git", "dynamic")
+			a.add(Review, "git-dynamic-working-directory", "git", "dynamic")
 			return
 		}
 		a.inspectGitPush(rest, restKnown, gitCWD)
 	case "commit":
 		if !cwdKnown {
-			a.add(Review, "git-dynamic-working-directory", "The Git working directory cannot be determined.", "git", "dynamic")
+			a.add(Review, "git-dynamic-working-directory", "git", "dynamic")
 			return
 		}
 		if branch := currentBranch(gitCWD); a.protectedBranch(branch, gitCWD) {
-			a.add(Block, "protected-branch-direct-commit", "保護ブランチへの直接commitをブロックしました。", "git", branch)
+			a.add(Block, "protected-branch-direct-commit", "git", branch)
 		}
 	}
 }
@@ -612,24 +611,24 @@ func (a *analyzer) inspectGitBranch(args []string, known []bool, gitCWD string) 
 		return
 	}
 	if !allKnown(known) {
-		a.add(Review, "git-dynamic-branch-delete", "削除するローカルブランチを特定できません。", "git", "dynamic")
+		a.add(Review, "git-dynamic-branch-delete", "git", "dynamic")
 		return
 	}
 	for _, branch := range gitOperands(args) {
 		if a.protectedBranch(branch, gitCWD) {
-			a.add(Block, "protected-branch-delete", "保護ブランチの削除をブロックしました。", "git", branch)
+			a.add(Block, "protected-branch-delete", "git", branch)
 		}
 	}
 }
 
 func (a *analyzer) inspectGitPush(args []string, known []bool, gitCWD string) {
 	if !allKnown(known) {
-		a.add(Review, "git-dynamic-push-ref", "push対象のrefを特定できません。", "git", "dynamic")
+		a.add(Review, "git-dynamic-push-ref", "git", "dynamic")
 		return
 	}
 	parsed := parseGitPushArgs(args)
 	if parsed.bulk {
-		a.add(Block, "protected-branch-bulk-push", "保護ブランチを含み得る一括pushをブロックしました。", "git", "all")
+		a.add(Block, "protected-branch-bulk-push", "git", "all")
 		return
 	}
 	deleting := containsAny(args, "--delete", "-d")
@@ -644,15 +643,15 @@ func (a *analyzer) inspectGitPush(args []string, known []bool, gitCWD string) {
 	targets := pushTargets(parsed.refspecs, deleting)
 	if deleting {
 		if len(targets) == 0 {
-			a.add(Review, "git-remote-delete-unknown", "削除するremote refを特定できません。", "git", "dynamic")
+			a.add(Review, "git-remote-delete-unknown", "git", "dynamic")
 			return
 		}
 		for _, target := range targets {
 			target = strings.TrimPrefix(target, ":")
 			if target == "tag" || strings.HasPrefix(target, "refs/tags/") {
-				a.add(Review, "git-remote-tag-delete", "remote tagの削除です。", "git", target)
+				a.add(Review, "git-remote-tag-delete", "git", target)
 			} else if a.protectedBranch(strings.TrimPrefix(target, "refs/heads/"), gitCWD) {
-				a.add(Block, "protected-remote-branch-delete", "保護remoteブランチの削除をブロックしました。", "git", target)
+				a.add(Block, "protected-remote-branch-delete", "git", target)
 			}
 		}
 		return
@@ -664,12 +663,12 @@ func (a *analyzer) inspectGitPush(args []string, known []bool, gitCWD string) {
 	for _, target := range targets {
 		target = pushedBranch(target, currentBranch(gitCWD))
 		if target != "" && a.protectedBranch(target, gitCWD) {
-			a.add(Block, "protected-branch-push", "保護ブランチへのpushをブロックしました。", "git", target)
+			a.add(Block, "protected-branch-push", "git", target)
 			return
 		}
 	}
 	if hasUnsafeForce(args) || hasForcedRefspec(parsed.refspecs) {
-		a.add(Review, "git-force-push", "git push --forceです。--force-with-leaseを検討してください。", "git", "")
+		a.add(Review, "git-force-push", "git", "")
 	}
 }
 
@@ -808,7 +807,7 @@ func (a *analyzer) inspectRedirect(redir *syntax.Redirect) {
 	case syntax.RdrIn, syntax.RdrInOut:
 		word := evalWord(redir.Word, a.home)
 		if word.Known && a.sensitiveReadPath(word.Value) {
-			a.add(Block, "sensitive-input-redirection", "redirectionによる機密ファイル読み取りをブロックしました。", "redirect", a.normalizePath(word.Value))
+			a.add(Block, "sensitive-input-redirection", "redirect", a.normalizePath(word.Value))
 		}
 		return
 	case syntax.RdrOut, syntax.AppOut, syntax.ClbOut, syntax.RdrAll, syntax.AppAll:
@@ -817,7 +816,7 @@ func (a *analyzer) inspectRedirect(redir *syntax.Redirect) {
 	}
 	word := evalWord(redir.Word, a.home)
 	if word.Known && a.protectedPath(word.Value) {
-		a.add(Block, "protected-redirection", "agent設定または機密パスへのredirectionをブロックしました。", "redirect", a.normalizePath(word.Value))
+		a.add(Block, "protected-redirection", "redirect", a.normalizePath(word.Value))
 	}
 }
 
@@ -841,8 +840,8 @@ func (a *analyzer) result() Result {
 	return Result{Decision: decision, Message: message, Findings: a.findings}
 }
 
-func (a *analyzer) add(decision Decision, ruleID, message, command, target string) {
-	finding := Finding{Decision: decision, RuleID: ruleID, Message: message, Command: command, Target: target}
+func (a *analyzer) add(decision Decision, ruleID, command, target string) {
+	finding := Finding{Decision: decision, RuleID: ruleID, Command: command, Target: target}
 	finding.Message = findingMessage(a.language, finding)
 	a.findings = append(a.findings, finding)
 }

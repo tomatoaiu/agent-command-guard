@@ -248,6 +248,16 @@ func TestOutputLocalization(t *testing.T) {
 	}
 }
 
+func TestFindingMessageFallbackIsLocalized(t *testing.T) {
+	finding := Finding{RuleID: "unregistered-rule"}
+	if got := findingMessage("en", finding); got != `Safety rule "unregistered-rule" matched.` {
+		t.Fatalf("English fallback: %q", got)
+	}
+	if got := findingMessage("ja", finding); got != `安全ルール "unregistered-rule" が一致しました。` {
+		t.Fatalf("Japanese fallback: %q", got)
+	}
+}
+
 func TestProtectedPathSymlinks(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
