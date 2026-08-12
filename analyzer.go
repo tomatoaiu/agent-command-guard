@@ -572,7 +572,11 @@ func (a *analyzer) inspectGit(args []string, known []bool) {
 	restKnown := known[1:]
 	switch sub {
 	case "branch":
-		a.inspectGitBranch(rest, restKnown)
+		if !cwdKnown {
+			a.add(Review, "git-dynamic-working-directory", "The Git working directory cannot be determined.", "git", "dynamic")
+			return
+		}
+		a.inspectGitBranch(rest, restKnown, gitCWD)
 	case "reset":
 		if containsAny(rest, "--hard") {
 			a.add(Block, "git-reset-hard", "git reset --hardをブロックしました。", "git", "")
@@ -596,13 +600,13 @@ func (a *analyzer) inspectGit(args []string, known []bool) {
 			a.add(Review, "git-dynamic-working-directory", "The Git working directory cannot be determined.", "git", "dynamic")
 			return
 		}
-		if branch := currentBranch(gitCWD); a.protectedBranch(branch) {
+		if branch := currentBranch(gitCWD); a.protectedBranch(branch, gitCWD) {
 			a.add(Block, "protected-branch-direct-commit", "保護ブランチへの直接commitをブロックしました。", "git", branch)
 		}
 	}
 }
 
-func (a *analyzer) inspectGitBranch(args []string, known []bool) {
+func (a *analyzer) inspectGitBranch(args []string, known []bool, gitCWD string) {
 	deleting := containsAny(args, "-d", "-D", "--delete")
 	if !deleting {
 		return
@@ -612,7 +616,7 @@ func (a *analyzer) inspectGitBranch(args []string, known []bool) {
 		return
 	}
 	for _, branch := range gitOperands(args) {
-		if a.protectedBranch(branch) {
+		if a.protectedBranch(branch, gitCWD) {
 			a.add(Block, "protected-branch-delete", "保護ブランチの削除をブロックしました。", "git", branch)
 		}
 	}
@@ -647,7 +651,7 @@ func (a *analyzer) inspectGitPush(args []string, known []bool, gitCWD string) {
 			target = strings.TrimPrefix(target, ":")
 			if target == "tag" || strings.HasPrefix(target, "refs/tags/") {
 				a.add(Review, "git-remote-tag-delete", "remote tagの削除です。", "git", target)
-			} else if a.protectedBranch(strings.TrimPrefix(target, "refs/heads/")) {
+			} else if a.protectedBranch(strings.TrimPrefix(target, "refs/heads/"), gitCWD) {
 				a.add(Block, "protected-remote-branch-delete", "保護remoteブランチの削除をブロックしました。", "git", target)
 			}
 		}
@@ -659,7 +663,7 @@ func (a *analyzer) inspectGitPush(args []string, known []bool, gitCWD string) {
 	}
 	for _, target := range targets {
 		target = pushedBranch(target, currentBranch(gitCWD))
-		if target != "" && a.protectedBranch(target) {
+		if target != "" && a.protectedBranch(target, gitCWD) {
 			a.add(Block, "protected-branch-push", "保護ブランチへのpushをブロックしました。", "git", target)
 			return
 		}
@@ -782,12 +786,12 @@ func pushedBranch(refspec, current string) string {
 	return strings.TrimPrefix(refspec, "refs/heads/")
 }
 
-func (a *analyzer) protectedBranch(branch string) bool {
+func (a *analyzer) protectedBranch(branch, gitCWD string) bool {
 	if branch == "" {
 		return false
 	}
 	patterns := []string{"main", "master"}
-	if remoteDefault := defaultBranch(a.cwd); remoteDefault != "" {
+	if remoteDefault := defaultBranch(gitCWD); remoteDefault != "" {
 		patterns = append(patterns, remoteDefault)
 	}
 	patterns = append(patterns, a.protectedBranches...)

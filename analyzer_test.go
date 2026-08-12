@@ -168,6 +168,32 @@ func TestGitCWorkingDirectoryBranchDetection(t *testing.T) {
 	}
 }
 
+func TestGitCUsesTargetRepositoryDefaultBranch(t *testing.T) {
+	root := t.TempDir()
+	sessionRepo := filepath.Join(root, "session")
+	targetRepo := filepath.Join(root, "target")
+	for _, repo := range []string{sessionRepo, targetRepo} {
+		command := exec.Command("git", "init", "-b", "feature/test", repo)
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("git init: %v: %s", err, output)
+		}
+	}
+	command := exec.Command("git", "-C", targetRepo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("set origin HEAD: %v: %s", err, output)
+	}
+
+	for _, source := range []string{
+		"git -C " + targetRepo + " push origin trunk",
+		"git -C " + targetRepo + " branch -D trunk",
+	} {
+		result := Analyze(source, sessionRepo)
+		if result.Decision != Block {
+			t.Errorf("%q: got %s, findings=%+v", source, result.Decision, result.Findings)
+		}
+	}
+}
+
 func TestAgentProtocolMapping(t *testing.T) {
 	if os.Getenv("HOME") == "" {
 		t.Skip("HOME unavailable")
