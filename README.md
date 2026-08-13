@@ -283,6 +283,11 @@ mise run check
 mise run fuzz
 ```
 
+Commits merged to `main` are collected by Release Please. Merge its generated
+release pull request to publish the corresponding `vX.Y.Z` GitHub release and
+the six platform archives. Use Conventional Commit titles so the next version
+and changelog can be derived automatically.
+
 ## License
 
 MIT

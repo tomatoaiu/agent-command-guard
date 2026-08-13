@@ -1,62 +1,216 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".release-please-manifest.json"
+    types:
+      - closed
+  workflow_dispatch:
+    inputs:
+      release_sha:
+        description: Merged Release Please commit SHA
+        required: true
+        type: string
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release
   cancel-in-progress: false
 
-permissions:
-  contents: read
+permissions: {}
+
+env:
+  GH_REPO: ${{ github.repository }}
 
 jobs:
   verify:
+    if: >-
+      ${{
+        github.repository == 'tomatoaiu/agent-command-guard' &&
+        github.actor == github.repository_owner &&
+        (
+          (
+            github.event_name == 'workflow_dispatch' &&
+            inputs.release_sha != ''
+          ) ||
+          (
+            github.event_name == 'pull_request' &&
+            github.event.pull_request.merged == true &&
+            github.event.pull_request.base.ref == 'main' &&
+            github.event.pull_request.head.repo.full_name == github.repository &&
+            github.event.pull_request.user.login == 'github-actions[bot]' &&
+            startsWith(
+              github.event.pull_request.head.ref,
+              'release-please--branches--main'
+            ) &&
+            contains(
+              github.event.pull_request.labels.*.name,
+              'autorelease: pending'
+            )
+          )
+        )
+      }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      RELEASE_SHA: >-
+        ${{
+          inputs.release_sha ||
+          github.event.pull_request.merge_commit_sha ||
+          github.sha
+        }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check out release commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
+          ref: ${{ env.RELEASE_SHA }}
+      - name: Set up mise
+        uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
         with:
+          version: 2026.8.4
           cache: true
-      - run: mise run check
+      - name: Verify source
+        run: mise run check
 
-  release:
+  build:
+    if: needs.verify.result == 'success'
     needs: verify
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     permissions:
-      contents: write
-      id-token: write
       attestations: write
       artifact-metadata: write
+      contents: read
+      id-token: write
+      pull-requests: read
+    env:
+      RELEASE_SHA: >-
+        ${{
+          inputs.release_sha ||
+          github.event.pull_request.merge_commit_sha ||
+          github.sha
+        }}
+    outputs:
+      release_pr_number: ${{ steps.metadata.outputs.release_pr_number }}
+      release_sha: ${{ steps.metadata.outputs.release_sha }}
+      tag: ${{ steps.metadata.outputs.tag }}
+      version: ${{ steps.metadata.outputs.version }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check out release commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
-      - uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
+          ref: ${{ env.RELEASE_SHA }}
+      - name: Set up mise
+        uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
         with:
+          version: 2026.8.4
           cache: true
-      - name: Validate release tag
-        shell: bash
+      - name: Validate release metadata
+        id: metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PULL_REQUEST_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
-          if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
-            echo "invalid release tag: $GITHUB_REF_NAME" >&2
+
+          version=$(jq -er '.["."]' .release-please-manifest.json)
+          if [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "invalid release manifest version: $version" >&2
             exit 1
           fi
+          if [[ "$version" == "0.0.0" ]]; then
+            echo "refusing to publish bootstrap version 0.0.0" >&2
+            exit 1
+          fi
+
+          release_sha=$(git rev-parse HEAD)
+          if [[ "$release_sha" != "$RELEASE_SHA" ]]; then
+            echo "checked out ${release_sha}, expected ${RELEASE_SHA}" >&2
+            exit 1
+          fi
+
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor "$release_sha" origin/main; then
+            echo "release commit is not on main" >&2
+            exit 1
+          fi
+
+          release_pr_number="${PULL_REQUEST_NUMBER:-}"
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            release_pr_number=$(
+              gh api \
+                -H "Accept: application/vnd.github+json" \
+                "repos/${GITHUB_REPOSITORY}/commits/${release_sha}/pulls" |
+                jq -er \
+                  --arg repository "$GITHUB_REPOSITORY" \
+                  --arg sha "$release_sha" '
+                    [
+                      .[]
+                      | select(
+                          .merged_at != null
+                          and .merge_commit_sha == $sha
+                          and .base.ref == "main"
+                          and .head.repo.full_name == $repository
+                          and .user.login == "github-actions[bot]"
+                          and (
+                            .head.ref
+                            | startswith("release-please--branches--main")
+                          )
+                          and (
+                            [.labels[].name]
+                            | index("autorelease: pending") != null
+                          )
+                        )
+                    ]
+                    | if length == 1 then
+                        .[0].number
+                      else
+                        error(
+                          "Expected one pending Release Please PR, found \(length)"
+                        )
+                      end
+                  '
+            )
+          fi
+          if [[ -z "$release_pr_number" ]]; then
+            echo "release pull request could not be determined" >&2
+            exit 1
+          fi
+
+          tag="v${version}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "release ${tag} already exists" >&2
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin \
+            "refs/tags/${tag}" >/dev/null 2>&1; then
+            echo "tag ${tag} exists without a published release" >&2
+            exit 1
+          fi
+
+          {
+            echo "release_pr_number=${release_pr_number}"
+            echo "release_sha=${release_sha}"
+            echo "tag=${tag}"
+            echo "version=${version}"
+          } >> "$GITHUB_OUTPUT"
       - name: Build release archives
-        shell: bash
+        env:
+          TAG: ${{ steps.metadata.outputs.tag }}
         run: |
           set -euo pipefail
+
           mkdir -p dist staging
           for target in \
             darwin/amd64 \
@@ -68,7 +222,7 @@ jobs:
           do
             goos="${target%/*}"
             goarch="${target#*/}"
-            package="agent-command-guard_${GITHUB_REF_NAME}_${goos}_${goarch}"
+            package="agent-command-guard_${TAG}_${goos}_${goarch}"
             package_dir="staging/${package}"
             mkdir -p "$package_dir"
             binary="${package_dir}/agent-command-guard"
@@ -77,7 +231,7 @@ jobs:
             fi
             CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build \
               -trimpath \
-              -ldflags "-s -w -X main.releaseVersion=${GITHUB_REF_NAME}" \
+              -ldflags "-s -w -X main.releaseVersion=${TAG}" \
               -o "$binary" \
               .
             cp LICENSE README.md "$package_dir/"
@@ -94,23 +248,108 @@ jobs:
             cd dist
             sha256sum ./*.tar.gz ./*.zip > SHA256SUMS
           )
-      - name: Attest release archives
+      - name: Generate build provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-checksums: dist/SHA256SUMS
-      - name: Create GitHub release
-        shell: bash
+      - name: Verify build provenance
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          release_flags=()
-          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
-            release_flags+=(--prerelease)
+
+          for archive in dist/*.tar.gz dist/*.zip; do
+            gh attestation verify "$archive" --repo "$GITHUB_REPOSITORY"
+          done
+      - name: Store release assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-${{ steps.metadata.outputs.tag }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/SHA256SUMS
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    if: needs.build.result == 'success'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      attestations: read
+      contents: write
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-${{ needs.build.outputs.tag }}
+          path: release-assets
+      - name: Verify release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          cd release-assets
+          sha256sum --check SHA256SUMS
+          for archive in ./*.tar.gz ./*.zip; do
+            gh attestation verify "$archive" --repo "$GITHUB_REPOSITORY"
+          done
+      - name: Publish immutable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ needs.build.outputs.release_sha }}
+          TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release ${TAG} already exists" >&2
+            exit 1
           fi
-          gh release create "$GITHUB_REF_NAME" \
-            --verify-tag \
-            --title "$GITHUB_REF_NAME" \
+          if gh api \
+            "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" \
+            >/dev/null 2>&1; then
+            echo "tag ${TAG} already exists" >&2
+            exit 1
+          fi
+
+          gh release create "$TAG" \
+            release-assets/*.tar.gz \
+            release-assets/*.zip \
+            "release-assets/SHA256SUMS#SHA-256 checksums" \
+            --fail-on-no-commits \
             --generate-notes \
-            "${release_flags[@]}" \
-            dist/*
+            --target "$RELEASE_SHA"
+
+          verified=false
+          for attempt in 1 2 3 4 5; do
+            if gh release verify "$TAG"; then
+              verified=true
+              break
+            fi
+            if [[ "$attempt" != "5" ]]; then
+              sleep 2
+            fi
+          done
+          if [[ "$verified" != "true" ]]; then
+            echo "release attestation verification failed" >&2
+            exit 1
+          fi
+
+          for archive in release-assets/*.tar.gz release-assets/*.zip; do
+            gh release verify-asset "$TAG" "$archive"
+          done
+      - name: Mark release pull request as published
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ needs.build.outputs.release_pr_number }}
+        run: >-
+          gh pr edit "$PR_NUMBER"
+          --remove-label "autorelease: pending"
