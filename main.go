@@ -19,7 +19,17 @@ func main() {
 	permissionRequest := flag.Bool("permission-request", false, "approve only structurally safe Codex permission requests")
 	explain := flag.Bool("explain", false, "emit the normalized decision for testing")
 	configPath := flag.String("config", "", "TOML policy path (default: user config directory)")
+	shellName := flag.String("shell", "auto", "shell syntax: auto, posix, or powershell")
+	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
+	if *showVersion {
+		fmt.Println(versionText())
+		return
+	}
+	shell, err := parseShellDialect(*shellName)
+	if err != nil {
+		fatal(err)
+	}
 	config, err := LoadConfig(*configPath, *configPath != "")
 	if err != nil {
 		fatal(err)
@@ -35,12 +45,15 @@ func main() {
 	}
 	command := stringField(input.ToolInput, "command", "cmd")
 	if *permissionRequest {
+		if shell.resolved() != ShellPOSIX {
+			return
+		}
 		if SafeTempCleanup(command, input.CWD) {
 			_ = json.NewEncoder(os.Stdout).Encode(permissionRequestAllow())
 		}
 		return
 	}
-	decision := AnalyzeWithConfig(command, input.CWD, config)
+	decision := AnalyzeWithConfigAndShell(command, input.CWD, config, shell)
 	if *explain {
 		_ = json.NewEncoder(os.Stdout).Encode(decision)
 		return

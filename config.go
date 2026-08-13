@@ -160,7 +160,7 @@ func (c Config) match(command, cwd string) *Rule {
 
 func inAnyDirectory(path string, roots []string) bool {
 	for _, root := range roots {
-		if path == root || strings.HasPrefix(path, root+string(filepath.Separator)) {
+		if pathWithin(path, root) {
 			return true
 		}
 	}

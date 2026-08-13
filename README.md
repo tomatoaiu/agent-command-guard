@@ -2,10 +2,11 @@
 
 An AST-based `PreToolUse` guard for shell commands proposed by coding agents.
 
-It parses shell input with [`mvdan.cc/sh`](https://github.com/mvdan/sh), walks
-commands and redirections (including pipelines, subshells, command
-substitutions, and literal nested-shell payloads), and returns one of three
-decisions:
+It parses POSIX shell input with
+[`mvdan.cc/sh`](https://github.com/mvdan/sh) and native Windows input with the
+PowerShell parser. It walks commands and redirections (including pipelines,
+subshells, command substitutions, and literal nested-shell payloads), and
+returns one of three decisions:
 
 - `allow`: continue without output
 - `review`: ask for confirmation when the host supports it; otherwise deny
@@ -31,8 +32,27 @@ OS permissions, agent sandboxing, and repository protections.
 
 ## Install
 
-Go 1.25 or newer is required. This repository pins its development toolchain
-with [mise](https://mise.jdx.dev/).
+Prebuilt archives for macOS, Linux, and Windows are attached to each
+[GitHub release](https://github.com/tomatoaiu/agent-command-guard/releases).
+Linux archives are also the correct choice for WSL2; install the Linux binary
+inside the WSL distribution rather than invoking the Windows executable from
+WSL. Each release includes `SHA256SUMS` and a GitHub artifact attestation.
+
+The archive names identify the operating system and architecture, for example:
+
+- `agent-command-guard_vX.Y.Z_darwin_arm64.tar.gz`
+- `agent-command-guard_vX.Y.Z_linux_amd64.tar.gz`
+- `agent-command-guard_vX.Y.Z_windows_amd64.zip`
+
+Verify a downloaded archive against `SHA256SUMS`. With the GitHub CLI, its
+provenance can also be verified:
+
+```sh
+gh attestation verify <archive> --repo tomatoaiu/agent-command-guard
+```
+
+Go 1.25 or newer is required only when installing from source. This repository
+pins its development toolchain with [mise](https://mise.jdx.dev/).
 
 ```sh
 go install github.com/tomatoaiu/agent-command-guard@latest
@@ -43,6 +63,8 @@ You can also build from a checkout:
 ```sh
 go build -o agent-command-guard .
 ```
+
+Check the installed version with `agent-command-guard --version`.
 
 ## Usage
 
@@ -57,6 +79,11 @@ printf '%s\n' '{"tool_input":{"command":"git clean -fd"},"cwd":"/tmp"}' | \
 Use `--agent claude` or `--agent codex` for hook output. A `review` result maps
 to `ask` for Claude and to `deny` for Codex because the Codex hook path does
 not currently provide an interactive review response.
+
+Shell syntax is selected automatically: `powershell` on native Windows and
+`posix` on other operating systems, including WSL2. Override detection with
+`--shell posix` or `--shell powershell` when necessary. PowerShell parsing uses
+`pwsh` when installed and otherwise uses Windows PowerShell.
 
 ### Codex
 
@@ -85,6 +112,33 @@ Review and trust a newly added or changed hook with `/hooks` in Codex. Codex
 does not support `permissionDecision: "ask"` for `PreToolUse`, so a `review`
 result is deliberately emitted as `deny`.
 
+On native Windows, Codex still exposes shell calls to hooks with the canonical
+`Bash` matcher. A hooks file shared across operating systems can use the
+[`commandWindows` hook override](https://developers.openai.com/codex/hooks):
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^Bash$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "agent-command-guard --agent codex --shell posix",
+            "commandWindows": "C:\\Users\\YOU\\bin\\agent-command-guard.exe --agent codex --shell powershell"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+For [WSL2](https://learn.chatgpt.com/docs/windows/wsl), keep the repository,
+Codex installation, guard binary, and hook configuration inside WSL and use
+the ordinary POSIX command shown above.
+
 To skip Codex's separate approval prompt for a narrowly verified temporary
 directory cleanup, register the same binary for `PermissionRequest`:
 
@@ -111,6 +165,8 @@ existing directory targets are direct children of the operating system's
 temporary directory. Variables, globs, command chains, symbolic links,
 repository/worktree roots, missing targets, and temporary roots themselves do
 not receive an approval decision and continue through Codex's normal prompt.
+The fast path is POSIX-only; PowerShell `Remove-Item` requests always continue
+through Codex's normal approval flow.
 
 ### Claude Code
 
@@ -143,7 +199,9 @@ For example, the relevant portion of `~/.claude/settings.json` is:
 
 Claude Code supports the interactive `ask` decision used for `review` results.
 Both adapters load the same custom rule file automatically, so no hook changes
-are needed when rules are added or edited.
+are needed when rules are added or edited. Claude Code on native Windows
+[uses Git Bash](https://docs.anthropic.com/en/docs/claude-code/getting-started),
+so pass `--shell posix`; Claude Code inside WSL also uses the POSIX mode.
 
 ### Output language
 
@@ -162,8 +220,8 @@ values remain language-independent.
 ## Custom rules
 
 The guard automatically loads `agent-command-guard/config.toml` from the OS
-user configuration directory (`~/.config` on Linux and
-`~/Library/Application Support` on macOS). Use
+user configuration directory (`~/.config` on Linux,
+`~/Library/Application Support` on macOS, and `%AppData%` on Windows). Use
 `--config /path/to/config.toml` to load a specific file. A missing default file
 is ignored, while a missing or invalid explicitly selected file is an error.
 
