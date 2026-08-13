@@ -5,6 +5,7 @@
     ".": {
       "include-component-in-tag": false,
       "include-v-in-tag": true,
+      "initial-version": "0.1.0",
       "release-type": "go",
       "skip-github-release": true
     }
