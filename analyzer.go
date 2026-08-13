@@ -2,9 +2,9 @@ package main
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -36,6 +36,7 @@ type Result struct {
 type analyzer struct {
 	cwd               string
 	home              string
+	shell             ShellDialect
 	language          string
 	protectedBranches []string
 	findings          []Finding
@@ -46,6 +47,10 @@ func Analyze(command, cwd string) Result {
 }
 
 func AnalyzeWithConfig(command, cwd string, config Config) Result {
+	return AnalyzeWithConfigAndShell(command, cwd, config, ShellAuto)
+}
+
+func AnalyzeWithConfigAndShell(command, cwd string, config Config, shell ShellDialect) Result {
 	if strings.TrimSpace(command) == "" {
 		return Result{Decision: Allow}
 	}
@@ -57,12 +62,17 @@ func AnalyzeWithConfig(command, cwd string, config Config) Result {
 		finding := Finding{Decision: rule.Action, RuleID: rule.ID, Message: message, Command: strings.TrimSpace(command), Target: cwd}
 		return Result{Decision: rule.Action, Message: message, Findings: []Finding{finding}}
 	}
-	a := &analyzer{cwd: cwd, home: os.Getenv("HOME"), language: config.Output.Language, protectedBranches: config.Git.ProtectedBranches}
-	a.analyzeSource(command, 0)
+	shell = shell.resolved()
+	a := &analyzer{cwd: cwd, home: userHomeDir(), shell: shell, language: config.Output.Language, protectedBranches: config.Git.ProtectedBranches}
+	if shell == ShellPowerShell {
+		a.analyzePowerShellSource(command, 0)
+	} else {
+		a.analyzePOSIXSource(command, 0)
+	}
 	return a.result()
 }
 
-func (a *analyzer) analyzeSource(source string, depth int) {
+func (a *analyzer) analyzePOSIXSource(source string, depth int) {
 	if depth > 4 {
 		a.add(Review, "nested-shell-depth", "shell", "")
 		return
@@ -77,7 +87,7 @@ func (a *analyzer) analyzeSource(source string, depth int) {
 	syntax.Walk(file, func(node syntax.Node) bool {
 		switch node := node.(type) {
 		case *syntax.CallExpr:
-			a.inspectCall(node, depth)
+			a.inspectPOSIXCall(node, depth)
 		case *syntax.Redirect:
 			a.inspectRedirect(node)
 		case *syntax.BinaryCmd:
@@ -89,7 +99,7 @@ func (a *analyzer) analyzeSource(source string, depth int) {
 	})
 }
 
-func (a *analyzer) inspectCall(call *syntax.CallExpr, depth int) {
+func (a *analyzer) inspectPOSIXCall(call *syntax.CallExpr, depth int) {
 	if len(call.Args) == 0 {
 		return
 	}
@@ -107,17 +117,21 @@ func (a *analyzer) inspectCall(call *syntax.CallExpr, depth int) {
 		argv[i], known[i] = word.Value, word.Known
 	}
 	argv, known = unwrapCommand(argv, known)
+	a.inspectCommand(argv, known, depth)
+}
+
+func (a *analyzer) inspectCommand(argv []string, known []bool, depth int) {
 	if len(argv) == 0 {
 		return
 	}
-	command := filepath.Base(argv[0])
+	command := normalizeCommandName(argv[0])
 	args := argv[1:]
 	argKnown := known[1:]
 
 	if isShell(command) {
 		if index := shellCodeIndex(args); index >= 0 {
 			if index < len(argKnown) && argKnown[index] {
-				a.analyzeSource(args[index], depth+1)
+				a.analyzePOSIXSource(args[index], depth+1)
 			} else {
 				a.add(Review, "dynamic-shell-code", command, "")
 			}
@@ -402,13 +416,13 @@ func SafeTempCleanup(source, cwd string) bool {
 	if !ok || stmt.Negated || stmt.Background || len(stmt.Redirs) != 0 || len(call.Assigns) != 0 || len(call.Args) < 2 {
 		return false
 	}
-	words := literalWords(call.Args, os.Getenv("HOME"))
+	words := literalWords(call.Args, userHomeDir())
 	for _, word := range words {
 		if !word.Known {
 			return false
 		}
 	}
-	if filepath.Base(words[0].Value) != "rm" {
+	if normalizeCommandName(words[0].Value) != "rm" {
 		return false
 	}
 	recursive := false
@@ -464,8 +478,7 @@ func safeTempDeleteTarget(target string) bool {
 	if _, err := os.Lstat(filepath.Join(target, ".git")); err == nil {
 		return false
 	}
-	command := exec.Command("/usr/bin/git", "-C", target, "rev-parse", "--show-toplevel")
-	command.Env = []string{"PATH=/usr/bin:/bin"}
+	command := gitCommand(target, "rev-parse", "--show-toplevel")
 	if output, err := command.Output(); err == nil {
 		repositoryRoot := resolvePathSymlinks(strings.TrimSpace(string(output)))
 		if repositoryRoot == resolvedTarget {
@@ -500,7 +513,7 @@ func statementHasSensitiveSource(stmt *syntax.Stmt, a *analyzer) bool {
 		if len(words) == 0 {
 			return true
 		}
-		command := filepath.Base(words[0].Value)
+		command := normalizeCommandName(words[0].Value)
 		if command == "security" || command == "env" || command == "printenv" {
 			found = true
 			return false
@@ -539,11 +552,11 @@ func statementHasDecoderSource(stmt *syntax.Stmt) bool {
 		if !ok || len(call.Args) == 0 {
 			return true
 		}
-		words := literalWords(call.Args, os.Getenv("HOME"))
+		words := literalWords(call.Args, userHomeDir())
 		if len(words) == 0 || !words[0].Known {
 			return true
 		}
-		command := filepath.Base(words[0].Value)
+		command := normalizeCommandName(words[0].Value)
 		args := make([]string, 0, len(words)-1)
 		for _, word := range words[1:] {
 			if !word.Known {
@@ -600,7 +613,7 @@ func inlineInterpreterCode(command string, args []string) bool {
 
 func containsExecutionGateway(args []string) bool {
 	for _, arg := range args {
-		command := filepath.Base(arg)
+		command := normalizeCommandName(arg)
 		if isShell(command) || inlineInterpreterName(command) {
 			return true
 		}
@@ -611,7 +624,7 @@ func containsExecutionGateway(args []string) bool {
 func findExecutesGateway(args []string) bool {
 	for i, arg := range args {
 		if (arg == "-exec" || arg == "-execdir" || arg == "-ok" || arg == "-okdir") && i+1 < len(args) {
-			command := filepath.Base(args[i+1])
+			command := normalizeCommandName(args[i+1])
 			return isShell(command) || inlineInterpreterName(command)
 		}
 	}
@@ -629,8 +642,8 @@ func statementHasCommand(stmt *syntax.Stmt, predicate func(string) bool) bool {
 		if !ok || len(call.Args) == 0 {
 			return true
 		}
-		value := evalWord(call.Args[0], os.Getenv("HOME"))
-		if value.Known && predicate(filepath.Base(value.Value)) {
+		value := evalWord(call.Args[0], userHomeDir())
+		if value.Known && predicate(normalizeCommandName(value.Value)) {
 			found = true
 			return false
 		}
@@ -998,7 +1011,7 @@ func evalWord(word *syntax.Word, home string) wordValue {
 
 func unwrapCommand(argv []string, known []bool) ([]string, []bool) {
 	for len(argv) > 0 {
-		switch filepath.Base(argv[0]) {
+		switch normalizeCommandName(argv[0]) {
 		case "command", "nohup", "time":
 			argv, known = argv[1:], known[1:]
 		case "env":
@@ -1016,7 +1029,7 @@ func unwrapCommand(argv []string, known []bool) ([]string, []bool) {
 func (a *analyzer) normalizePath(path string) string {
 	if path == "~" {
 		path = a.home
-	} else if strings.HasPrefix(path, "~/") {
+	} else if strings.HasPrefix(path, "~/") || a.shell == ShellPowerShell && strings.HasPrefix(path, `~\`) {
 		path = filepath.Join(a.home, path[2:])
 	}
 	if !filepath.IsAbs(path) {
@@ -1038,6 +1051,9 @@ func (a *analyzer) protectedPath(path string) bool {
 	}
 	if configPath, err := DefaultConfigPath(); err == nil {
 		protected = append(protected, configPath)
+	}
+	if executable, err := os.Executable(); err == nil {
+		protected = append(protected, executable)
 	}
 	for _, root := range protected {
 		if pathWithin(normalized, root) || pathWithin(resolved, resolvePathSymlinks(root)) {
@@ -1069,7 +1085,15 @@ func (a *analyzer) sensitiveReadPath(path string) bool {
 }
 
 func pathWithin(path, root string) bool {
-	return path == root || strings.HasPrefix(path, root+string(filepath.Separator))
+	if runtime.GOOS == "windows" {
+		path = strings.ToLower(path)
+		root = strings.ToLower(root)
+	}
+	prefix := root
+	if !strings.HasSuffix(prefix, string(filepath.Separator)) {
+		prefix += string(filepath.Separator)
+	}
+	return path == root || strings.HasPrefix(path, prefix)
 }
 
 // resolvePathSymlinks resolves the longest existing prefix so that a missing
@@ -1093,16 +1117,60 @@ func resolvePathSymlinks(path string) string {
 }
 
 func (a *analyzer) dangerousDeleteTarget(target string) bool {
-	if target == string(filepath.Separator) || target == a.home || a.protectedPath(target) {
+	target = filepath.Clean(target)
+	if filesystemRoot(target) || a.home != "" && samePath(target, a.home) || a.protectedPath(target) {
 		return true
 	}
 	system := []string{"/System", "/Library", "/Applications", "/Users", "/Volumes", "/private", "/etc", "/usr", "/bin", "/sbin", "/var", "/opt", "/dev"}
+	if runtime.GOOS == "windows" {
+		system = nil
+		for _, path := range []string{
+			os.Getenv("SystemRoot"), os.Getenv("ProgramFiles"), os.Getenv("ProgramFiles(x86)"),
+			os.Getenv("ProgramData"),
+		} {
+			if path != "" {
+				system = append(system, filepath.Clean(path))
+			}
+		}
+		if a.home != "" {
+			system = append(system, filepath.Dir(a.home))
+		}
+	}
 	for _, path := range system {
-		if target == path {
+		if (runtime.GOOS == "windows" && pathWithin(target, path)) || samePath(target, path) {
 			return true
 		}
 	}
 	return false
+}
+
+func samePath(left, right string) bool {
+	return pathWithin(left, right) && pathWithin(right, left)
+}
+
+func (a *analyzer) dangerousGlobTarget(target string) bool {
+	index := strings.IndexAny(target, "*?[")
+	if index < 0 {
+		return false
+	}
+	prefix := strings.TrimRight(target[:index], `/\`)
+	volume := filepath.VolumeName(target)
+	if prefix == "" {
+		prefix = string(filepath.Separator)
+	} else if volume != "" && strings.EqualFold(prefix, volume) {
+		prefix = volume + string(filepath.Separator)
+	}
+	return a.dangerousDeleteTarget(prefix)
+}
+
+func filesystemRoot(path string) bool {
+	path = filepath.Clean(path)
+	volume := filepath.VolumeName(path)
+	root := volume + string(filepath.Separator)
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(path, root)
+	}
+	return path == root
 }
 
 func stripGitGlobals(args []string, known []bool, cwd string) ([]string, []bool, string, bool) {
@@ -1156,8 +1224,7 @@ func resolveGitCWD(cwd, path string) string {
 }
 
 func currentBranch(cwd string) string {
-	command := exec.Command("/usr/bin/git", "-C", cwd, "branch", "--show-current")
-	command.Env = []string{"PATH=/usr/bin:/bin"}
+	command := gitCommand(cwd, "branch", "--show-current")
 	output, err := command.Output()
 	if err != nil {
 		return ""
@@ -1166,20 +1233,17 @@ func currentBranch(cwd string) string {
 }
 
 func emptyGitHistory(cwd string) bool {
-	repository := exec.Command("/usr/bin/git", "-C", cwd, "rev-parse", "--is-inside-work-tree")
-	repository.Env = []string{"PATH=/usr/bin:/bin"}
+	repository := gitCommand(cwd, "rev-parse", "--is-inside-work-tree")
 	output, err := repository.Output()
 	if err != nil || strings.TrimSpace(string(output)) != "true" {
 		return false
 	}
-	head := exec.Command("/usr/bin/git", "-C", cwd, "rev-parse", "--verify", "HEAD")
-	head.Env = []string{"PATH=/usr/bin:/bin"}
+	head := gitCommand(cwd, "rev-parse", "--verify", "HEAD")
 	return head.Run() != nil
 }
 
 func defaultBranch(cwd string) string {
-	command := exec.Command("/usr/bin/git", "-C", cwd, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
-	command.Env = []string{"PATH=/usr/bin:/bin"}
+	command := gitCommand(cwd, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
 	output, err := command.Output()
 	if err != nil {
 		return ""

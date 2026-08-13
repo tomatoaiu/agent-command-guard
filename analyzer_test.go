@@ -4,10 +4,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
 func TestAnalyzeCorpus(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX path semantics are covered on Linux and macOS")
+	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	cwd := t.TempDir()
@@ -108,7 +112,7 @@ func TestAnalyzeCorpus(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			result := Analyze(test.command, cwd)
+			result := analyzePOSIX(test.command, cwd)
 			if result.Decision != test.expected {
 				t.Fatalf("decision: got %s, want %s; findings=%+v", result.Decision, test.expected, result.Findings)
 			}
@@ -120,6 +124,9 @@ func TestAnalyzeCorpus(t *testing.T) {
 }
 
 func TestSafeTempCleanup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the permission-request fast path is POSIX-only")
+	}
 	first, err := os.MkdirTemp("", "sidecars.")
 	if err != nil {
 		t.Fatal(err)
@@ -189,7 +196,7 @@ func TestProtectedCurrentBranchPush(t *testing.T) {
 		t.Fatalf("git commit: %v: %s", err, output)
 	}
 	for _, source := range []string{"git push origin HEAD", "git push origin @"} {
-		result := Analyze(source, repo)
+		result := analyzeNativeShell(source, repo)
 		if result.Decision != Block || !hasRule(result, "protected-branch-push") {
 			t.Errorf("%q: got %s, findings=%+v", source, result.Decision, result.Findings)
 		}
@@ -204,7 +211,7 @@ func TestInitialPushToProtectedBranchIsAllowed(t *testing.T) {
 	}
 
 	for _, source := range []string{"git push -u origin main", "git push origin HEAD:main"} {
-		result := Analyze(source, repo)
+		result := analyzeNativeShell(source, repo)
 		if result.Decision != Allow {
 			t.Errorf("%q: got %s, findings=%+v", source, result.Decision, result.Findings)
 		}
@@ -219,7 +226,7 @@ func TestInitialPushToProtectedBranchIsAllowed(t *testing.T) {
 			t.Fatalf("git %v: %v: %s", args, err, output)
 		}
 	}
-	result := Analyze("git push -u origin main", repo)
+	result := analyzeNativeShell("git push -u origin main", repo)
 	if result.Decision != Block || !hasRule(result, "protected-branch-push") {
 		t.Errorf("push after initial commit: got %s, findings=%+v", result.Decision, result.Findings)
 	}
@@ -248,13 +255,13 @@ func TestGitCWorkingDirectoryBranchDetection(t *testing.T) {
 		"git -C " + featureRepo + " push origin HEAD",
 		"git -C " + root + " -C worktrees/feature-repo commit -m test",
 	} {
-		result := Analyze(source, mainRepo)
+		result := analyzeNativeShell(source, mainRepo)
 		if result.Decision != Allow {
 			t.Errorf("%q: got %s, findings=%+v", source, result.Decision, result.Findings)
 		}
 	}
 
-	result := Analyze("git -C "+mainRepo+" commit -m test", featureRepo)
+	result := analyzeNativeShell("git -C "+mainRepo+" commit -m test", featureRepo)
 	if result.Decision != Block || !hasRule(result, "protected-branch-direct-commit") {
 		t.Errorf("protected -C target: got %s, findings=%+v", result.Decision, result.Findings)
 	}
@@ -283,7 +290,7 @@ func TestGitCUsesTargetRepositoryDefaultBranch(t *testing.T) {
 		"git -C " + targetRepo + " push origin trunk",
 		"git -C " + targetRepo + " branch -D trunk",
 	} {
-		result := Analyze(source, sessionRepo)
+		result := analyzeNativeShell(source, sessionRepo)
 		if result.Decision != Block {
 			t.Errorf("%q: got %s, findings=%+v", source, result.Decision, result.Findings)
 		}
@@ -314,10 +321,13 @@ func TestAgentProtocolMapping(t *testing.T) {
 }
 
 func TestOutputLocalization(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("exact POSIX path messages are covered on Linux and macOS")
+	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	english := Analyze("rm -rf /", t.TempDir())
+	english := analyzePOSIX("rm -rf /", t.TempDir())
 	if english.Message != "Recursive deletion of a protected target was blocked. Target: /" {
 		t.Fatalf("default English message: %q", english.Message)
 	}
@@ -326,7 +336,7 @@ func TestOutputLocalization(t *testing.T) {
 	if err := japaneseConfig.prepare(t.TempDir()); err != nil {
 		t.Fatal(err)
 	}
-	japanese := AnalyzeWithConfig("rm -rf /", t.TempDir(), japaneseConfig)
+	japanese := analyzePOSIXWithConfig("rm -rf /", t.TempDir(), japaneseConfig)
 	if japanese.Message != "保護対象への再帰削除をブロックしました。 対象: /" {
 		t.Fatalf("Japanese message: %q", japanese.Message)
 	}
@@ -338,7 +348,7 @@ func TestOutputLocalization(t *testing.T) {
 	if err := customConfig.prepare(t.TempDir()); err != nil {
 		t.Fatal(err)
 	}
-	custom := AnalyzeWithConfig("echo ok", t.TempDir(), customConfig)
+	custom := analyzePOSIXWithConfig("echo ok", t.TempDir(), customConfig)
 	if custom.Message != "カスタムルール \"trusted\" が一致しました。" {
 		t.Fatalf("Japanese custom rule message: %q", custom.Message)
 	}
@@ -355,6 +365,9 @@ func TestFindingMessageFallbackIsLocalized(t *testing.T) {
 }
 
 func TestProtectedPathSymlinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows symlink creation depends on runner privileges")
+	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	protectedDir := filepath.Join(home, ".codex")
@@ -377,7 +390,7 @@ func TestProtectedPathSymlinks(t *testing.T) {
 		{"echo x > " + link, "protected-redirection"},
 		{"ln -sf ~/.codex/config.toml /tmp/config-link", "protected-symlink"},
 	} {
-		result := Analyze(test.command, t.TempDir())
+		result := analyzePOSIX(test.command, t.TempDir())
 		if result.Decision != Block || !hasRule(result, test.rule) {
 			t.Errorf("%q: got %s, findings=%+v", test.command, result.Decision, result.Findings)
 		}
@@ -413,13 +426,13 @@ func TestCustomRules(t *testing.T) {
 	}{
 		{"custom block", "deploy api", filepath.Join(root, "prod", "api"), Block, "keep-prod-safe"},
 		{"command allow", "git clean -fd", root, Allow, "allow-known-clean"},
-		{"directory allow", "rm -rf /", filepath.Join(root, "scratch", "child"), Allow, "ignore-scratch"},
-		{"directory boundary", "rm -rf /", filepath.Join(root, "scratch-other"), Block, "recursive-delete-protected"},
+		{"directory allow", "git reset --hard", filepath.Join(root, "scratch", "child"), Allow, "ignore-scratch"},
+		{"directory boundary", "git reset --hard", filepath.Join(root, "scratch-other"), Block, "git-reset-hard"},
 		{"builtin fallback", "git reset --hard", root, Block, "git-reset-hard"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			result := AnalyzeWithConfig(test.command, test.cwd, config)
+			result := analyzePOSIXWithConfig(test.command, test.cwd, config)
 			if result.Decision != test.decision || !hasRule(result, test.rule) {
 				t.Fatalf("got decision=%s findings=%+v", result.Decision, result.Findings)
 			}
@@ -437,7 +450,7 @@ func TestConfiguredProtectedBranches(t *testing.T) {
 		"git push origin --delete release/2026-08",
 		"git branch -D release/next",
 	} {
-		result := AnalyzeWithConfig(command, t.TempDir(), config)
+		result := analyzePOSIXWithConfig(command, t.TempDir(), config)
 		if result.Decision != Block {
 			t.Errorf("%q: got %s, want block; findings=%+v", command, result.Decision, result.Findings)
 		}
@@ -504,7 +517,7 @@ func FuzzAnalyzeNeverPanics(f *testing.F) {
 		f.Add(seed)
 	}
 	f.Fuzz(func(t *testing.T, command string) {
-		_ = Analyze(command, "/tmp")
+		_ = analyzePOSIX(command, "/tmp")
 	})
 }
 
@@ -515,4 +528,16 @@ func hasRule(result Result, rule string) bool {
 		}
 	}
 	return false
+}
+
+func analyzePOSIX(command, cwd string) Result {
+	return AnalyzeWithConfigAndShell(command, cwd, Config{}, ShellPOSIX)
+}
+
+func analyzePOSIXWithConfig(command, cwd string, config Config) Result {
+	return AnalyzeWithConfigAndShell(command, cwd, config, ShellPOSIX)
+}
+
+func analyzeNativeShell(command, cwd string) Result {
+	return AnalyzeWithConfigAndShell(command, cwd, Config{}, ShellAuto)
 }

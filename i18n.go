@@ -12,7 +12,8 @@ type translations struct {
 
 var findingMessages = map[string]translations{
 	"nested-shell-depth":             {"Nested shell code is too deep and requires review.", "ネストしたshellコードが深すぎるため確認が必要です。"},
-	"shell-parse-risk":               {"Shell syntax containing risky terms could not be parsed safely.", "危険語を含むshell構文を安全に解析できませんでした。"},
+	"shell-parse-risk":               {"Shell syntax could not be parsed safely.", "shell構文を安全に解析できませんでした。"},
+	"shell-parser-unavailable":       {"The shell parser is unavailable, so the command requires review.", "shell parserを利用できないためcommandの確認が必要です。"},
 	"dynamic-command-name":           {"The command name is dynamic.", "実行するcommand名が動的です。"},
 	"dynamic-shell-code":             {"Dynamic shell code is being executed.", "動的なshellコードの実行です。"},
 	"protected-delete":               {"Deletion of an agent configuration or sensitive path was blocked.", "agent設定または機密パスの削除をブロックしました。"},
@@ -28,6 +29,7 @@ var findingMessages = map[string]translations{
 	"package-publish":                {"Package publication was blocked.", "パッケージ公開をブロックしました。"},
 	"world-writable":                 {"chmod 777 was blocked.", "chmod 777をブロックしました。"},
 	"guard-self-protection":          {"Writing to or changing an agent configuration or sensitive path was blocked.", "agent設定または機密パスへの変更をブロックしました。"},
+	"dynamic-protected-write":        {"The write target cannot be determined statically.", "書き込み対象を静的に確定できません。"},
 	"dynamic-protected-symlink":      {"The symbolic link target cannot be determined.", "symbolic linkの参照先を特定できません。"},
 	"protected-symlink":              {"Creation of a symbolic link to a protected path was blocked.", "保護対象を指すsymbolic linkの作成をブロックしました。"},
 	"sensitive-shell-read":           {"Reading a sensitive file through the shell was blocked.", "shell経由の機密ファイル読み取りをブロックしました。"},
