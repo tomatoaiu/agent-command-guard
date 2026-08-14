@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/tomatoaiu/agent-command-guard/compare/v0.2.0...v0.3.0) (2026-08-14)
+
+
+### Features
+
+* add scoped direct file rules ([#25](https://github.com/tomatoaiu/agent-command-guard/issues/25)) ([a38e7fb](https://github.com/tomatoaiu/agent-command-guard/commit/a38e7fbf7da4f4528fac995b120670f92894e7ad))
+
 ## [0.2.0](https://github.com/tomatoaiu/agent-command-guard/compare/v0.1.0...v0.2.0) (2026-08-14)
 
 
