@@ -77,7 +77,9 @@ func fileOperationForTool(toolName string) (FileOperation, bool) {
 	switch strings.ToLower(strings.TrimSpace(toolName)) {
 	case "read", "view", "open", "read_file":
 		return FileRead, true
-	case "edit", "write", "write_file", "apply_patch", "multiedit", "multi_edit", "notebookedit", "notebook_edit":
+	case "edit", "multiedit", "multi_edit", "notebookedit", "notebook_edit":
+		return FileEdit, true
+	case "write", "write_file", "apply_patch":
 		return FileWrite, true
 	default:
 		return "", false

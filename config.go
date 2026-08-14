@@ -12,9 +12,10 @@ import (
 )
 
 type Config struct {
-	Git    GitConfig    `toml:"git"`
-	Output OutputConfig `toml:"output"`
-	Rules  []Rule       `toml:"rules"`
+	Git       GitConfig    `toml:"git"`
+	Output    OutputConfig `toml:"output"`
+	Rules     []Rule       `toml:"rules"`
+	FileRules []FileRule   `toml:"file_rules"`
 }
 
 type OutputConfig struct {
@@ -121,12 +122,12 @@ func (c *Config) prepare(baseDir string) error {
 			rule.Directories[j] = expanded
 		}
 	}
-	return nil
+	return prepareFileRules(c.FileRules, baseDir, seen)
 }
 
 func expandConfigPath(path, baseDir string) (string, error) {
 	if path == "" {
-		return "", errors.New("directory must not be empty")
+		return "", errors.New("path must not be empty")
 	}
 	if path == "~" || strings.HasPrefix(path, "~/") {
 		home, err := os.UserHomeDir()

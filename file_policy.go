@@ -13,6 +13,7 @@ type FileOperation string
 
 const (
 	FileRead  FileOperation = "read"
+	FileEdit  FileOperation = "edit"
 	FileWrite FileOperation = "write"
 )
 
@@ -42,6 +43,28 @@ func AnalyzeFile(operation FileOperation, path, cwd string, config Config) Resul
 
 	normalized := a.normalizePath(path)
 	resolved := resolvePathSymlinks(normalized)
+	builtin := analyzeFileBuiltin(operation, normalized, resolved, a)
+	if builtin.Decision == Block {
+		return builtin
+	}
+
+	resolvedCWD := resolvePathSymlinks(a.cwd)
+	rule := config.matchFile(operation, normalized, resolved, a.cwd, resolvedCWD)
+	if rule == nil || (builtin.Decision == Review && !fileRuleCanReplaceReview(builtin, rule.Action)) {
+		return builtin
+	}
+	message := customRuleMessage(config.Output.Language, rule.ID)
+	finding := Finding{
+		Decision: rule.Action,
+		RuleID:   rule.ID,
+		Message:  message,
+		Command:  string(operation),
+		Target:   normalized,
+	}
+	return Result{Decision: rule.Action, Message: message, Findings: []Finding{finding}}
+}
+
+func analyzeFileBuiltin(operation FileOperation, normalized, resolved string, a *analyzer) Result {
 	switch operation {
 	case FileRead:
 		if sensitiveReadBlocked(normalized, resolved, a.home) {
@@ -49,7 +72,7 @@ func AnalyzeFile(operation FileOperation, path, cwd string, config Config) Resul
 		} else if sensitiveReadReview(normalized, resolved, a.home) {
 			a.add(Review, "sensitive-file-read-review", string(operation), normalized)
 		}
-	case FileWrite:
+	case FileEdit, FileWrite:
 		if sensitiveWriteBlocked(normalized, resolved, a) {
 			a.add(Block, "sensitive-file-write", string(operation), normalized)
 		} else if zshProfile(normalized) {
@@ -61,6 +84,21 @@ func AnalyzeFile(operation FileOperation, path, cwd string, config Config) Resul
 		a.add(Block, "invalid-file-operation", string(operation), normalized)
 	}
 	return a.result()
+}
+
+// An allow or review file rule may replace contextual workspace review, but it
+// cannot weaken credential or persistence review. A block rule can always make
+// the built-in result stricter.
+func fileRuleCanReplaceReview(builtin Result, action Decision) bool {
+	if action == Block {
+		return true
+	}
+	for _, finding := range builtin.Findings {
+		if finding.RuleID != "outside-workspace-write" {
+			return false
+		}
+	}
+	return true
 }
 
 func validToolPath(path string) bool {

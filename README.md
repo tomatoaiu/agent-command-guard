@@ -240,12 +240,14 @@ user configuration directory (`~/.config` on Linux,
 `--config /path/to/config.toml` to load a specific file. A missing default file
 is ignored, while a missing or invalid explicitly selected file is an error.
 
+### Shell command rules
+
 Command rules are checked from top to bottom before the built-in shell policy.
-The direct file policy is built in and cannot be weakened by a command rule.
-The first matching command rule wins. `command` is a Go regular expression
-matched against the entire trimmed shell input. `directories` contains cwd
-roots; descendants also match. Relative directory paths are resolved from the
-configuration file's directory, and `~/` is supported.
+The direct file policy cannot be weakened by a command rule. The first matching
+command rule wins. `command` is a Go regular expression matched against the
+entire trimmed shell input. `directories` contains cwd roots; descendants also
+match. Relative directory paths are resolved from the configuration file's
+directory, and `~/` is supported.
 
 ```toml
 # Allow one exact command everywhere. Regex metacharacters must be escaped when
@@ -269,10 +271,46 @@ command = 'deploy .*'
 directories = ["~/src/production"]
 ```
 
-Available actions are `allow`, `review`, and `block`. An `allow` rule bypasses
-the built-in policy, so keep broad directory rules limited to locations where
-that behavior is intentional. Rule IDs must be unique; omitted IDs are
-generated as `custom-rule-N`.
+An `allow` command rule bypasses the built-in shell policy, so keep broad
+rules limited to locations where that behavior is intentional.
+
+### Direct file rules
+
+File rules scope a decision to explicitly listed direct operations and target
+roots. `directories` is optional and restricts the caller's cwd. Descendants
+of each root or directory match. The first matching file rule wins.
+
+```toml
+[[file_rules]]
+id = "allow-trusted-dotfiles-source"
+action = "allow"
+operations = ["edit", "write"]
+roots = ["~/src/dotfiles"]
+# Optional: only apply when the agent is working in these directories.
+directories = ["~/src/projects"]
+```
+
+Operations are `read`, `edit`, and `write`. Tool aliases such as `MultiEdit`
+and `NotebookEdit` map to `edit`; `apply_patch` maps to `write`. Operations not
+listed in a rule retain the built-in decision.
+
+File rules are evaluated only after invalid inputs and built-in credential,
+key, persistence, agent-control, and guard self-protection checks. Those checks
+are non-overridable. An `allow` file rule can suppress the contextual
+`outside-workspace-write` review, but cannot suppress a built-in block or a
+credential or persistence review. A `review` or `block` rule can make an
+otherwise allowed operation stricter.
+
+Configured target roots, target paths, caller directories, and cwd values are
+normalized. A rule matches only when both the normalized path and the path with
+its longest existing symbolic-link prefix resolved remain inside the configured
+root. A symlink escape therefore does not inherit an allow decision. Relative
+roots and directories are resolved from the configuration file's directory;
+`~/` is supported.
+
+Available actions for both rule types are `allow`, `review`, and `block`. Rule
+IDs must be unique across command and file rules. Omitted command IDs are
+generated as `custom-rule-N`; omitted file IDs use `custom-file-rule-N`.
 
 ### Protected Git branches
 
