@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 )
 
 type hookInput struct {
@@ -53,7 +54,7 @@ func main() {
 		}
 		return
 	}
-	decision := AnalyzeWithConfigAndShell(command, input.CWD, config, shell)
+	decision := analyzeHookInput(input, config, shell)
 	if *explain {
 		_ = json.NewEncoder(os.Stdout).Encode(decision)
 		return
@@ -62,6 +63,25 @@ func main() {
 		return
 	}
 	emitHookDecision(*agent, decision)
+}
+
+func analyzeHookInput(input hookInput, config Config, shell ShellDialect) Result {
+	if operation, ok := fileOperationForTool(input.ToolName); ok {
+		path := stringField(input.ToolInput, "file_path", "path", "notebook_path")
+		return AnalyzeFile(operation, path, input.CWD, config)
+	}
+	return AnalyzeWithConfigAndShell(stringField(input.ToolInput, "command", "cmd"), input.CWD, config, shell)
+}
+
+func fileOperationForTool(toolName string) (FileOperation, bool) {
+	switch strings.ToLower(strings.TrimSpace(toolName)) {
+	case "read", "view", "open", "read_file":
+		return FileRead, true
+	case "edit", "write", "write_file", "apply_patch", "multiedit", "multi_edit", "notebookedit", "notebook_edit":
+		return FileWrite, true
+	default:
+		return "", false
+	}
 }
 
 func permissionRequestAllow() map[string]any {

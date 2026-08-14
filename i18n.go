@@ -63,6 +63,13 @@ var findingMessages = map[string]translations{
 	"sensitive-archive":              {"Archiving an agent configuration or sensitive path requires review.", "agent設定または機密パスのアーカイブ作成は確認が必要です。"},
 	"container-prune":                {"Container cleanup may delete images, volumes, or build data.", "コンテナのクリーンアップによりimage、volume、build dataが削除される可能性があります。"},
 	"infrastructure-delete":          {"Infrastructure resource deletion requires review.", "インフラリソースの削除は確認が必要です。"},
+	"invalid-file-path":              {"The file tool path is missing or invalid.", "ファイルツールのパスが未指定または不正です。"},
+	"invalid-file-operation":         {"The file operation is unsupported.", "未対応のファイル操作です。"},
+	"sensitive-file-read":            {"Reading a private key or credential file was blocked.", "秘密鍵または認証情報ファイルの読み取りをブロックしました。"},
+	"sensitive-file-read-review":     {"This file may contain credentials and requires review before reading.", "認証情報を含む可能性があるため、読み取り前に確認が必要です。"},
+	"sensitive-file-write":           {"Writing to a credential, persistence, or agent control path was blocked.", "認証情報、永続化、またはagent制御パスへの書き込みをブロックしました。"},
+	"shell-profile-write":            {"Writing to a Zsh profile requires review.", "Zshプロファイルへの書き込みは確認が必要です。"},
+	"outside-workspace-write":        {"Writing outside the current workspace requires review.", "現在のworkspace外への書き込みは確認が必要です。"},
 }
 
 func findingMessage(language string, finding Finding) string {
