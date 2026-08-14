@@ -89,6 +89,74 @@ func TestPowerShellParseErrorRequiresReview(t *testing.T) {
 	}
 }
 
+func TestPowerShellProtectedGitExceptionRequiresOneDirectCommand(t *testing.T) {
+	directGit := powerShellCommand{
+		Name:               "git.exe",
+		NameKnown:          true,
+		InvocationOperator: "Unknown",
+		Elements: []powerShellElement{
+			{Value: "commit", Known: true},
+			{Value: "-m", Known: true},
+			{Value: "test", Known: true},
+		},
+	}
+	base := powerShellDocument{SingleDirectCommand: true, Commands: []powerShellCommand{directGit}}
+	if !eligiblePowerShellProtectedGitException(base, 0) {
+		t.Fatal("one direct literal Git command should be eligible")
+	}
+
+	for _, test := range []struct {
+		name     string
+		document powerShellDocument
+		depth    int
+	}{
+		{"assignment or compound statement", powerShellDocument{Commands: []powerShellCommand{directGit}}, 0},
+		{"nested", base, 1},
+		{"dynamic argument", powerShellDocument{SingleDirectCommand: true, Commands: []powerShellCommand{{Name: "git", NameKnown: true, Elements: []powerShellElement{{Known: false}}}}}, 0},
+		{"call operator", powerShellDocument{SingleDirectCommand: true, Commands: []powerShellCommand{{Name: "git", NameKnown: true, InvocationOperator: "Ampersand"}}}, 0},
+		{"pipeline", powerShellDocument{SingleDirectCommand: true, Commands: []powerShellCommand{directGit}, Pipelines: []powerShellPipeline{{}}}, 0},
+		{"redirection", powerShellDocument{SingleDirectCommand: true, Commands: []powerShellCommand{directGit}, Redirections: []powerShellRedirection{{}}}, 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if eligiblePowerShellProtectedGitException(test.document, test.depth) {
+				t.Fatal("unsafe PowerShell shape was eligible")
+			}
+		})
+	}
+}
+
+func TestPowerShellProtectedGitExceptionEndToEnd(t *testing.T) {
+	if _, err := findPowerShell(); err != nil {
+		if runtime.GOOS == "windows" {
+			t.Fatal(err)
+		}
+		t.Skip("PowerShell is not installed")
+	}
+	repository := committedRepository(t, "main")
+	config := Config{Git: GitConfig{ProtectedBranchExceptions: []GitProtectedBranchException{
+		{Repository: repository, Branch: "main", Operations: []string{"commit", "push"}, Remote: "origin"},
+	}}}
+	if err := config.prepare(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, command := range []string{"git commit -m test", "git push origin main"} {
+		result := AnalyzeWithConfigAndShell(command, repository, config, ShellPowerShell)
+		if result.Decision != Allow || !hasRule(result, "protected-branch-exception") {
+			t.Fatalf("%q: got decision=%s findings=%+v", command, result.Decision, result.Findings)
+		}
+	}
+	for _, command := range []string{
+		"$env:GIT_CONFIG_NOSYSTEM = '1'; git commit -m test",
+		"git commit -m test; git push origin main",
+	} {
+		result := AnalyzeWithConfigAndShell(command, repository, config, ShellPowerShell)
+		if result.Decision != Block || hasRule(result, "protected-branch-exception") {
+			t.Fatalf("%q: got decision=%s findings=%+v", command, result.Decision, result.Findings)
+		}
+	}
+}
+
 func quotePowerShell(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
 }

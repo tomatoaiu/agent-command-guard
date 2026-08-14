@@ -291,6 +291,35 @@ protected branches. A plain force push remains `review` on unprotected
 branches, while `--force-with-lease` is allowed. Remote tag deletion and a
 remote deletion whose target cannot be determined remain `review`.
 
+For a repository that intentionally commits and pushes directly to a protected
+branch, use a structured exception instead of an `allow` command regex. Each
+entry is one exact repository/branch policy cell; `remote` is required when
+`operations` contains `push`:
+
+```toml
+[[git.protected_branch_exceptions]]
+repository = "~/.local/share/chezmoi"
+branch = "main"
+operations = ["commit", "push"]
+remote = "origin"
+```
+
+Repository paths support `~/` and paths relative to the configuration file.
+The guard compares the configured path with Git's canonical top-level working
+tree, so a subdirectory and `git -C` work while another checkout or worktree
+does not inherit the exception. Existing symbolic links are resolved when the
+configuration is loaded; a link created afterward fails closed.
+
+The exception applies only to one direct, literal Git invocation. Commits may
+use ordinary commit arguments (including `--amend`) but not `--no-verify`.
+Protected pushes must name the configured remote and the same source and target
+branch explicitly, for example `git push origin main`, `main:main`, or the
+equivalent full `refs/heads/` form. Bare pushes, push options, force variants,
+deletion, bulk or mirror pushes, multiple refspecs, `HEAD:main`, shell command
+composition, substitutions, wrappers, redirections, and environment or Git
+configuration overrides do not receive the exception. These constraints are
+built in and cannot be relaxed by fields in the structured entry.
+
 ## Development
 
 ```sh
