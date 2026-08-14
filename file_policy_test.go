@@ -165,6 +165,284 @@ func TestAnalyzeHookInputDispatchesFileTools(t *testing.T) {
 	}
 }
 
+func TestAnalyzeFileRules(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	workspace := filepath.Join(home, "work", "project")
+	otherWorkspace := filepath.Join(home, "work", "other")
+	trusted := filepath.Join(home, "dotfiles")
+	for _, directory := range []string{workspace, otherWorkspace, trusted} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	config := Config{FileRules: []FileRule{{
+		ID:          "allow-trusted-dotfiles",
+		Action:      Allow,
+		Operations:  []FileOperation{FileEdit, FileWrite},
+		Roots:       []string{trusted},
+		Directories: []string{workspace},
+	}}}
+	if err := config.prepare(home); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, operation := range []FileOperation{FileEdit, FileWrite} {
+		result := AnalyzeFile(operation, filepath.Join(trusted, "config.toml"), workspace, config)
+		if result.Decision != Allow || !hasRule(result, "allow-trusted-dotfiles") {
+			t.Errorf("%s: got decision=%s findings=%+v", operation, result.Decision, result.Findings)
+		}
+	}
+
+	read := AnalyzeFile(FileRead, filepath.Join(trusted, "config.toml"), workspace, config)
+	if read.Decision != Allow || hasRule(read, "allow-trusted-dotfiles") {
+		t.Fatalf("unlisted read operation inherited rule: decision=%s findings=%+v", read.Decision, read.Findings)
+	}
+
+	for name, path := range map[string]string{
+		"sibling":          filepath.Join(home, "notes", "config.toml"),
+		"prefix collision": filepath.Join(home, "dotfiles-backup", "config.toml"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			result := AnalyzeFile(FileWrite, path, workspace, config)
+			if result.Decision != Review || !hasRule(result, "outside-workspace-write") || hasRule(result, "allow-trusted-dotfiles") {
+				t.Fatalf("got decision=%s findings=%+v", result.Decision, result.Findings)
+			}
+		})
+	}
+
+	wrongCaller := AnalyzeFile(FileEdit, filepath.Join(trusted, "config.toml"), otherWorkspace, config)
+	if wrongCaller.Decision != Review || !hasRule(wrongCaller, "outside-workspace-write") {
+		t.Fatalf("caller restriction: got decision=%s findings=%+v", wrongCaller.Decision, wrongCaller.Findings)
+	}
+}
+
+func TestAnalyzeFileRulePrecedence(t *testing.T) {
+	home := t.TempDir()
+	workspace := filepath.Join(home, "workspace")
+	trusted := filepath.Join(home, "trusted")
+	for _, directory := range []string{workspace, trusted} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	config := Config{FileRules: []FileRule{
+		{ID: "review-first", Action: Review, Operations: []FileOperation{FileWrite}, Roots: []string{trusted}},
+		{ID: "allow-second", Action: Allow, Operations: []FileOperation{FileWrite}, Roots: []string{trusted}},
+	}}
+	if err := config.prepare(home); err != nil {
+		t.Fatal(err)
+	}
+	result := AnalyzeFile(FileWrite, filepath.Join(trusted, "config.toml"), workspace, config)
+	if result.Decision != Review || !hasRule(result, "review-first") || hasRule(result, "allow-second") {
+		t.Fatalf("first match: got decision=%s findings=%+v", result.Decision, result.Findings)
+	}
+
+	blockConfig := Config{FileRules: []FileRule{{
+		ID: "block-credential-review", Action: Block, Operations: []FileOperation{FileRead}, Roots: []string{trusted},
+	}}}
+	if err := blockConfig.prepare(home); err != nil {
+		t.Fatal(err)
+	}
+	result = AnalyzeFile(FileRead, filepath.Join(trusted, ".npmrc"), workspace, blockConfig)
+	if result.Decision != Block || !hasRule(result, "block-credential-review") {
+		t.Fatalf("stricter rule: got decision=%s findings=%+v", result.Decision, result.Findings)
+	}
+}
+
+func TestAnalyzeFileRulesDoNotWeakenBuiltins(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	workspace := filepath.Join(home, "work")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	config := Config{FileRules: []FileRule{{
+		ID:         "allow-home",
+		Action:     Allow,
+		Operations: []FileOperation{FileRead, FileEdit, FileWrite},
+		Roots:      []string{home},
+	}}}
+	if err := config.prepare(home); err != nil {
+		t.Fatal(err)
+	}
+
+	guardConfig, err := DefaultConfigPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name      string
+		operation FileOperation
+		path      string
+		decision  Decision
+		rule      string
+	}{
+		{"agent control write", FileEdit, filepath.Join(home, ".codex", "config.toml"), Block, "sensitive-file-write"},
+		{"credential write", FileWrite, filepath.Join(home, ".env.production"), Block, "sensitive-file-write"},
+		{"persistence write", FileEdit, filepath.Join(home, ".bashrc"), Block, "sensitive-file-write"},
+		{"guard config write", FileWrite, guardConfig, Block, "sensitive-file-write"},
+		{"guard binary write", FileWrite, filepath.Join(home, ".local", "bin", "agent-command-guard"), Block, "sensitive-file-write"},
+		{"private key read", FileRead, filepath.Join(home, "keys", "id_ed25519"), Block, "sensitive-file-read"},
+		{"credential review", FileRead, filepath.Join(home, ".npmrc"), Review, "sensitive-file-read-review"},
+		{"persistence review", FileEdit, filepath.Join(home, ".zshrc"), Review, "shell-profile-write"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result := AnalyzeFile(test.operation, test.path, workspace, config)
+			if result.Decision != test.decision || !hasRule(result, test.rule) || hasRule(result, "allow-home") {
+				t.Fatalf("got decision=%s findings=%+v", result.Decision, result.Findings)
+			}
+		})
+	}
+}
+
+func TestAnalyzeFileRuleSymlinkContainment(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows symlink creation depends on runner privileges")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workspace := filepath.Join(home, "workspace")
+	trusted := filepath.Join(home, "trusted")
+	outside := filepath.Join(home, "outside")
+	for _, directory := range []string{workspace, trusted, outside} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	config := Config{FileRules: []FileRule{{
+		ID:         "allow-trusted",
+		Action:     Allow,
+		Operations: []FileOperation{FileWrite},
+		Roots:      []string{trusted},
+	}}}
+	if err := config.prepare(home); err != nil {
+		t.Fatal(err)
+	}
+
+	escape := filepath.Join(trusted, "escape")
+	if err := os.Symlink(outside, escape); err != nil {
+		t.Fatal(err)
+	}
+	result := AnalyzeFile(FileWrite, filepath.Join(escape, "new.txt"), workspace, config)
+	if result.Decision != Review || !hasRule(result, "outside-workspace-write") || hasRule(result, "allow-trusted") {
+		t.Fatalf("symlink escape: got decision=%s findings=%+v", result.Decision, result.Findings)
+	}
+
+	trustedAlias := filepath.Join(home, "trusted-alias")
+	if err := os.Symlink(trusted, trustedAlias); err != nil {
+		t.Fatal(err)
+	}
+	aliasConfig := Config{FileRules: []FileRule{{
+		ID:         "allow-trusted-alias",
+		Action:     Allow,
+		Operations: []FileOperation{FileWrite},
+		Roots:      []string{trustedAlias},
+	}}}
+	if err := aliasConfig.prepare(home); err != nil {
+		t.Fatal(err)
+	}
+	result = AnalyzeFile(FileWrite, filepath.Join(trustedAlias, "new.txt"), workspace, aliasConfig)
+	if result.Decision != Allow || !hasRule(result, "allow-trusted-alias") {
+		t.Fatalf("configured symlink root: got decision=%s findings=%+v", result.Decision, result.Findings)
+	}
+}
+
+func TestFileOperationForTool(t *testing.T) {
+	for tool, want := range map[string]FileOperation{
+		"Read":         FileRead,
+		"read_file":    FileRead,
+		"Edit":         FileEdit,
+		"MultiEdit":    FileEdit,
+		"NotebookEdit": FileEdit,
+		"Write":        FileWrite,
+		"write_file":   FileWrite,
+		"apply_patch":  FileWrite,
+	} {
+		got, ok := fileOperationForTool(tool)
+		if !ok || got != want {
+			t.Errorf("%s: got (%q, %t), want (%q, true)", tool, got, ok, want)
+		}
+	}
+	if got, ok := fileOperationForTool("Bash"); ok || got != "" {
+		t.Fatalf("Bash: got (%q, %t), want unsupported", got, ok)
+	}
+}
+
+func TestFileRuleConfigValidation(t *testing.T) {
+	validRule := func() FileRule {
+		return FileRule{
+			ID:         "files",
+			Action:     Allow,
+			Operations: []FileOperation{FileWrite},
+			Roots:      []string{"./trusted"},
+		}
+	}
+	tests := []struct {
+		name   string
+		config Config
+	}{
+		{
+			name: "invalid action",
+			config: Config{FileRules: []FileRule{{
+				ID: "files", Action: Decision("skip"), Operations: []FileOperation{FileWrite}, Roots: []string{"./trusted"},
+			}}},
+		},
+		{
+			name: "missing operations",
+			config: Config{FileRules: []FileRule{{
+				ID: "files", Action: Allow, Roots: []string{"./trusted"},
+			}}},
+		},
+		{
+			name: "invalid operation",
+			config: Config{FileRules: []FileRule{{
+				ID: "files", Action: Allow, Operations: []FileOperation{"delete"}, Roots: []string{"./trusted"},
+			}}},
+		},
+		{
+			name: "duplicate operation",
+			config: Config{FileRules: []FileRule{{
+				ID: "files", Action: Allow, Operations: []FileOperation{FileWrite, FileWrite}, Roots: []string{"./trusted"},
+			}}},
+		},
+		{
+			name: "missing roots",
+			config: Config{FileRules: []FileRule{{
+				ID: "files", Action: Allow, Operations: []FileOperation{FileWrite},
+			}}},
+		},
+		{
+			name: "empty root",
+			config: Config{FileRules: []FileRule{{
+				ID: "files", Action: Allow, Operations: []FileOperation{FileWrite}, Roots: []string{""},
+			}}},
+		},
+		{
+			name: "duplicate command id",
+			config: Config{
+				Rules:     []Rule{{ID: "files", Action: Allow, Command: "echo ok"}},
+				FileRules: []FileRule{validRule()},
+			},
+		},
+		{
+			name:   "duplicate file id",
+			config: Config{FileRules: []FileRule{validRule(), validRule()}},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := test.config.prepare(t.TempDir()); err == nil {
+				t.Fatal("invalid file rule was accepted")
+			}
+		})
+	}
+}
+
 func TestAnalyzeFileLocalization(t *testing.T) {
 	config := Config{Output: OutputConfig{Language: "ja"}}
 	result := AnalyzeFile(FileRead, ".env", t.TempDir(), config)

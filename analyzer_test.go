@@ -472,6 +472,13 @@ command = 'git clean -fd'
 id = "ignore-generated"
 action = "allow"
 directories = ["./generated", "~/trusted"]
+
+[[file_rules]]
+id = "allow-generated-files"
+action = "allow"
+operations = ["edit", "write"]
+roots = ["./generated-files", "~/dotfiles"]
+directories = ["./workspace"]
 `)
 	if err := os.WriteFile(path, contents, 0o600); err != nil {
 		t.Fatal(err)
@@ -488,6 +495,15 @@ directories = ["./generated", "~/trusted"]
 	}
 	if got := config.Rules[1].Directories[0]; got != filepath.Join(dir, "generated") {
 		t.Fatalf("relative directory: got %q", got)
+	}
+	if len(config.FileRules) != 1 {
+		t.Fatalf("file rules: got %d, want 1", len(config.FileRules))
+	}
+	if got := config.FileRules[0].Roots[0]; got != filepath.Join(dir, "generated-files") {
+		t.Fatalf("relative file root: got %q", got)
+	}
+	if got := config.FileRules[0].Directories[0]; got != filepath.Join(dir, "workspace") {
+		t.Fatalf("relative caller directory: got %q", got)
 	}
 }
 
