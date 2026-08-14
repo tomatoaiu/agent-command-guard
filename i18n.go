@@ -51,6 +51,7 @@ var findingMessages = map[string]translations{
 	"protected-branch-push":          {"A push to a protected branch was blocked.", "保護ブランチへのpushをブロックしました。"},
 	"git-force-push":                 {"This is a force push. Consider using --force-with-lease.", "git push --forceです。--force-with-leaseを検討してください。"},
 	"protected-branch-direct-commit": {"A direct commit to a protected branch was blocked.", "保護ブランチへの直接commitをブロックしました。"},
+	"protected-branch-exception":     {"A structured protected-branch exception matched.", "構造化された保護ブランチ例外が一致しました。"},
 	"git-dynamic-working-directory":  {"The Git working directory cannot be determined.", "Gitの作業ディレクトリを特定できません。"},
 	"sensitive-input-redirection":    {"Reading a sensitive file through input redirection was blocked.", "redirectionによる機密ファイル読み取りをブロックしました。"},
 	"protected-redirection":          {"Redirection to an agent configuration or sensitive path was blocked.", "agent設定または機密パスへのredirectionをブロックしました。"},
@@ -63,6 +64,13 @@ var findingMessages = map[string]translations{
 	"sensitive-archive":              {"Archiving an agent configuration or sensitive path requires review.", "agent設定または機密パスのアーカイブ作成は確認が必要です。"},
 	"container-prune":                {"Container cleanup may delete images, volumes, or build data.", "コンテナのクリーンアップによりimage、volume、build dataが削除される可能性があります。"},
 	"infrastructure-delete":          {"Infrastructure resource deletion requires review.", "インフラリソースの削除は確認が必要です。"},
+	"invalid-file-path":              {"The file tool path is missing or invalid.", "ファイルツールのパスが未指定または不正です。"},
+	"invalid-file-operation":         {"The file operation is unsupported.", "未対応のファイル操作です。"},
+	"sensitive-file-read":            {"Reading a private key or credential file was blocked.", "秘密鍵または認証情報ファイルの読み取りをブロックしました。"},
+	"sensitive-file-read-review":     {"This file may contain credentials and requires review before reading.", "認証情報を含む可能性があるため、読み取り前に確認が必要です。"},
+	"sensitive-file-write":           {"Writing to a credential, persistence, or agent control path was blocked.", "認証情報、永続化、またはagent制御パスへの書き込みをブロックしました。"},
+	"shell-profile-write":            {"Writing to a Zsh profile requires review.", "Zshプロファイルへの書き込みは確認が必要です。"},
+	"outside-workspace-write":        {"Writing outside the current workspace requires review.", "現在のworkspace外への書き込みは確認が必要です。"},
 }
 
 func findingMessage(language string, finding Finding) string {

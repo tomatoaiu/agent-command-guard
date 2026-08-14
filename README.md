@@ -1,6 +1,7 @@
 # agent-command-guard
 
-An AST-based `PreToolUse` guard for shell commands proposed by coding agents.
+An AST- and path-aware `PreToolUse` guard for shell and direct file operations
+proposed by coding agents.
 
 It parses POSIX shell input with
 [`mvdan.cc/sh`](https://github.com/mvdan/sh) and native Windows input with the
@@ -24,6 +25,10 @@ integrations that use the Claude-style `PreToolUse` JSON protocol.
 - Credential-to-network and download-to-shell pipelines
 - Package publication, privilege escalation, and sensitive system commands
 - Dynamically constructed commands that cannot be analyzed confidently
+- Direct reads of private keys, agent credentials, and common credential stores
+- Direct writes to credentials, shell persistence, agent control paths, and
+  destinations outside the current workspace
+- Symbolic-link paths, including missing targets below an existing link
 
 The policy is intentionally conservative, but it is not a sandbox. It cannot
 prove that an allowed command is harmless, and a process can perform actions
@@ -68,13 +73,21 @@ Check the installed version with `agent-command-guard --version`.
 
 ## Usage
 
-The program reads one hook event as JSON from standard input. The command is
-read from `tool_input.command` or `tool_input.cmd`.
+The program reads one hook event as JSON from standard input. Shell commands
+are read from `tool_input.command` or `tool_input.cmd`. `Read`, `Edit`, and
+`Write` paths are read from `tool_input.file_path` or `tool_input.path`.
 
 ```sh
 printf '%s\n' '{"tool_input":{"command":"git clean -fd"},"cwd":"/tmp"}' | \
   agent-command-guard --explain
+
+printf '%s\n' '{"tool_name":"Read","tool_input":{"file_path":".env"},"cwd":"/tmp/project"}' | \
+  agent-command-guard --explain
 ```
+
+For a multi-file `apply_patch` call, the host adapter must extract every target
+path and submit one `Write` event per path. A file tool with a missing, invalid,
+or control-character-containing path is blocked rather than silently allowed.
 
 Use `--agent claude` or `--agent codex` for hook output. A `review` result maps
 to `ask` for Claude and to `deny` for Codex because the Codex hook path does
@@ -87,15 +100,16 @@ Shell syntax is selected automatically: `powershell` on native Windows and
 
 ### Codex
 
-Codex discovers user hooks at `~/.codex/hooks.json`. Register the binary for
-the `Bash` tool:
+Codex discovers user hooks at `~/.codex/hooks.json`. Register an adapter for
+shell and direct file tools. The adapter should normalize every `apply_patch`
+target to a `Write` event before invoking the guard:
 
 ```json
 {
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "^Bash$",
+        "matcher": "^(Bash|Read|Edit|Write|NotebookEdit|apply_patch)$",
         "hooks": [
           {
             "type": "command",
@@ -170,7 +184,8 @@ through Codex's normal approval flow.
 
 ### Claude Code
 
-Register an adapter in Claude Code's `PreToolUse` hooks for `Bash`:
+Register an adapter in Claude Code's `PreToolUse` hooks for shell and direct
+file tools:
 
 ```sh
 #!/bin/sh
@@ -184,7 +199,7 @@ For example, the relevant portion of `~/.claude/settings.json` is:
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Bash",
+        "matcher": "Bash|Read|Edit|Write|NotebookEdit",
         "hooks": [
           {
             "type": "command",
@@ -198,8 +213,8 @@ For example, the relevant portion of `~/.claude/settings.json` is:
 ```
 
 Claude Code supports the interactive `ask` decision used for `review` results.
-Both adapters load the same custom rule file automatically, so no hook changes
-are needed when rules are added or edited. Claude Code on native Windows
+Both adapters load the same policy file automatically, so no hook changes are
+needed when rules are added or edited. Claude Code on native Windows
 [uses Git Bash](https://docs.anthropic.com/en/docs/claude-code/getting-started),
 so pass `--shell posix`; Claude Code inside WSL also uses the POSIX mode.
 
@@ -225,11 +240,12 @@ user configuration directory (`~/.config` on Linux,
 `--config /path/to/config.toml` to load a specific file. A missing default file
 is ignored, while a missing or invalid explicitly selected file is an error.
 
-Rules are checked from top to bottom before the built-in policy. The first
-matching rule wins. `command` is a Go regular expression matched against the
-entire trimmed shell input. `directories` contains cwd roots; descendants also
-match. Relative directory paths are resolved from the configuration file's
-directory, and `~/` is supported.
+Command rules are checked from top to bottom before the built-in shell policy.
+The direct file policy is built in and cannot be weakened by a command rule.
+The first matching command rule wins. `command` is a Go regular expression
+matched against the entire trimmed shell input. `directories` contains cwd
+roots; descendants also match. Relative directory paths are resolved from the
+configuration file's directory, and `~/` is supported.
 
 ```toml
 # Allow one exact command everywhere. Regex metacharacters must be escaped when
@@ -274,6 +290,35 @@ unprotected branches. It blocks pushes, direct commits, and deletion targeting
 protected branches. A plain force push remains `review` on unprotected
 branches, while `--force-with-lease` is allowed. Remote tag deletion and a
 remote deletion whose target cannot be determined remain `review`.
+
+For a repository that intentionally commits and pushes directly to a protected
+branch, use a structured exception instead of an `allow` command regex. Each
+entry is one exact repository/branch policy cell; `remote` is required when
+`operations` contains `push`:
+
+```toml
+[[git.protected_branch_exceptions]]
+repository = "~/.local/share/chezmoi"
+branch = "main"
+operations = ["commit", "push"]
+remote = "origin"
+```
+
+Repository paths support `~/` and paths relative to the configuration file.
+The guard compares the configured path with Git's canonical top-level working
+tree, so a subdirectory and `git -C` work while another checkout or worktree
+does not inherit the exception. Existing symbolic links are resolved when the
+configuration is loaded; a link created afterward fails closed.
+
+The exception applies only to one direct, literal Git invocation. Commits may
+use ordinary commit arguments (including `--amend`) but not `--no-verify`.
+Protected pushes must name the configured remote and the same source and target
+branch explicitly, for example `git push origin main`, `main:main`, or the
+equivalent full `refs/heads/` form. Bare pushes, push options, force variants,
+deletion, bulk or mirror pushes, multiple refspecs, `HEAD:main`, shell command
+composition, substitutions, wrappers, redirections, and environment or Git
+configuration overrides do not receive the exception. These constraints are
+built in and cannot be relaxed by fields in the structured entry.
 
 ## Development
 

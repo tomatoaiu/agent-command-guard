@@ -34,12 +34,14 @@ type Result struct {
 }
 
 type analyzer struct {
-	cwd               string
-	home              string
-	shell             ShellDialect
-	language          string
-	protectedBranches []string
-	findings          []Finding
+	cwd                           string
+	home                          string
+	shell                         ShellDialect
+	language                      string
+	protectedBranches             []string
+	protectedBranchExceptions     []GitProtectedBranchException
+	protectedGitExceptionEligible bool
+	findings                      []Finding
 }
 
 func Analyze(command, cwd string) Result {
@@ -63,7 +65,14 @@ func AnalyzeWithConfigAndShell(command, cwd string, config Config, shell ShellDi
 		return Result{Decision: rule.Action, Message: message, Findings: []Finding{finding}}
 	}
 	shell = shell.resolved()
-	a := &analyzer{cwd: cwd, home: userHomeDir(), shell: shell, language: config.Output.Language, protectedBranches: config.Git.ProtectedBranches}
+	a := &analyzer{
+		cwd:                       cwd,
+		home:                      userHomeDir(),
+		shell:                     shell,
+		language:                  config.Output.Language,
+		protectedBranches:         config.Git.ProtectedBranches,
+		protectedBranchExceptions: config.Git.ProtectedBranchExceptions,
+	}
 	if shell == ShellPowerShell {
 		a.analyzePowerShellSource(command, 0)
 	} else {
@@ -84,6 +93,9 @@ func (a *analyzer) analyzePOSIXSource(source string, depth int) {
 		}
 		return
 	}
+	previousEligibility := a.protectedGitExceptionEligible
+	a.protectedGitExceptionEligible = eligiblePOSIXProtectedGitException(file, depth, a.home)
+	defer func() { a.protectedGitExceptionEligible = previousEligibility }()
 	syntax.Walk(file, func(node syntax.Node) bool {
 		switch node := node.(type) {
 		case *syntax.CallExpr:
@@ -97,6 +109,32 @@ func (a *analyzer) analyzePOSIXSource(source string, depth int) {
 		}
 		return true
 	})
+}
+
+func eligiblePOSIXProtectedGitException(file *syntax.File, depth int, home string) bool {
+	if depth != 0 || len(file.Stmts) != 1 {
+		return false
+	}
+	statement := file.Stmts[0]
+	if statement.Negated || statement.Background || statement.Coprocess || len(statement.Redirs) > 0 {
+		return false
+	}
+	call, ok := statement.Cmd.(*syntax.CallExpr)
+	if !ok || len(call.Assigns) > 0 || len(call.Args) == 0 {
+		return false
+	}
+	command := evalWord(call.Args[0], home)
+	if !command.Known || normalizeCommandName(command.Value) != "git" {
+		return false
+	}
+	callCount := 0
+	syntax.Walk(file, func(node syntax.Node) bool {
+		if _, ok := node.(*syntax.CallExpr); ok {
+			callCount++
+		}
+		return true
+	})
+	return callCount == 1
 }
 
 func (a *analyzer) inspectPOSIXCall(call *syntax.CallExpr, depth int) {
@@ -661,6 +699,7 @@ func literalWords(words []*syntax.Word, home string) []wordValue {
 }
 
 func (a *analyzer) inspectGit(args []string, known []bool) {
+	globalsSafeForException := safeGitGlobalsForException(args, known)
 	args, known, gitCWD, cwdKnown := stripGitGlobals(args, known, a.cwd)
 	if len(args) == 0 || !known[0] {
 		return
@@ -692,14 +731,18 @@ func (a *analyzer) inspectGit(args []string, known []bool) {
 			a.add(Review, "git-dynamic-working-directory", "git", "dynamic")
 			return
 		}
-		a.inspectGitPush(rest, restKnown, gitCWD)
+		a.inspectGitPush(rest, restKnown, gitCWD, globalsSafeForException)
 	case "commit":
 		if !cwdKnown {
 			a.add(Review, "git-dynamic-working-directory", "git", "dynamic")
 			return
 		}
 		if branch := currentBranch(gitCWD); a.protectedBranch(branch, gitCWD) {
-			a.add(Block, "protected-branch-direct-commit", "git", branch)
+			if globalsSafeForException && safeProtectedCommitArguments(rest, restKnown) && a.allowsProtectedBranchException(gitOperationCommit, gitCWD, branch, "") {
+				a.add(Allow, "protected-branch-exception", "git", branch)
+			} else {
+				a.add(Block, "protected-branch-direct-commit", "git", branch)
+			}
 		}
 	}
 }
@@ -720,7 +763,7 @@ func (a *analyzer) inspectGitBranch(args []string, known []bool, gitCWD string) 
 	}
 }
 
-func (a *analyzer) inspectGitPush(args []string, known []bool, gitCWD string) {
+func (a *analyzer) inspectGitPush(args []string, known []bool, gitCWD string, globalsSafeForException bool) {
 	if !allKnown(known) {
 		a.add(Review, "git-dynamic-push-ref", "git", "dynamic")
 		return
@@ -766,6 +809,10 @@ func (a *analyzer) inspectGitPush(args []string, known []bool, gitCWD string) {
 	for _, target := range targets {
 		target = pushedBranch(target, currentBranch(gitCWD))
 		if !initialPush && target != "" && a.protectedBranch(target, gitCWD) {
+			if globalsSafeForException && exactProtectedPush(parsed, target) && a.allowsProtectedBranchException(gitOperationPush, gitCWD, target, parsed.remote) {
+				a.add(Allow, "protected-branch-exception", "git", target)
+				continue
+			}
 			a.add(Block, "protected-branch-push", "git", target)
 			return
 		}
@@ -785,54 +832,68 @@ func hasForcedRefspec(refspecs []string) bool {
 }
 
 type gitPushArgs struct {
-	refspecs []string
-	bulk     bool
+	remote           string
+	refspecs         []string
+	bulk             bool
+	hasOptions       bool
+	repositoryOption bool
 }
 
 func parseGitPushArgs(args []string) gitPushArgs {
 	operands := make([]string, 0, len(args))
-	repositoryOption := false
+	result := gitPushArgs{}
 	endOptions := false
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if !endOptions && arg == "--" {
 			endOptions = true
+			result.hasOptions = true
 			continue
 		}
 		if !endOptions {
 			if arg == "--all" || arg == "--mirror" {
-				return gitPushArgs{bulk: true}
+				result.bulk = true
+				result.hasOptions = true
+				return result
 			}
 			if arg == "--repo" {
-				repositoryOption = true
+				result.repositoryOption = true
+				result.hasOptions = true
 				if i+1 < len(args) {
 					i++
 				}
 				continue
 			}
 			if strings.HasPrefix(arg, "--repo=") {
-				repositoryOption = true
+				result.repositoryOption = true
+				result.hasOptions = true
 				continue
 			}
 			if pushOptionTakesValue(arg) {
+				result.hasOptions = true
 				if i+1 < len(args) {
 					i++
 				}
 				continue
 			}
 			if strings.HasPrefix(arg, "-") {
+				result.hasOptions = true
 				continue
 			}
 		}
 		operands = append(operands, arg)
 	}
-	if repositoryOption {
-		return gitPushArgs{refspecs: operands}
+	if result.repositoryOption {
+		result.refspecs = operands
+		return result
 	}
-	if len(operands) < 2 {
-		return gitPushArgs{}
+	if len(operands) > 0 {
+		result.remote = operands[0]
 	}
-	return gitPushArgs{refspecs: operands[1:]}
+	if len(operands) > 1 {
+		result.refspecs = operands[1:]
+	}
+	return result
 }
 
 func pushOptionTakesValue(arg string) bool {
@@ -1012,7 +1073,7 @@ func evalWord(word *syntax.Word, home string) wordValue {
 func unwrapCommand(argv []string, known []bool) ([]string, []bool) {
 	for len(argv) > 0 {
 		switch normalizeCommandName(argv[0]) {
-		case "command", "nohup", "time":
+		case "command", "exec", "nohup", "time":
 			argv, known = argv[1:], known[1:]
 		case "env":
 			argv, known = argv[1:], known[1:]

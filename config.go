@@ -22,7 +22,8 @@ type OutputConfig struct {
 }
 
 type GitConfig struct {
-	ProtectedBranches []string `toml:"protected_branches"`
+	ProtectedBranches         []string                      `toml:"protected_branches"`
+	ProtectedBranchExceptions []GitProtectedBranchException `toml:"protected_branch_exceptions"`
 }
 
 type Rule struct {
@@ -85,6 +86,9 @@ func (c *Config) prepare(baseDir string) error {
 		if _, err := filepath.Match(pattern, "branch"); err != nil {
 			return fmt.Errorf("invalid protected branch pattern %q: %w", pattern, err)
 		}
+	}
+	if err := prepareGitProtectedBranchExceptions(c.Git.ProtectedBranchExceptions, baseDir); err != nil {
+		return err
 	}
 	seen := make(map[string]bool)
 	for i := range c.Rules {

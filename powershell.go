@@ -16,10 +16,11 @@ import (
 )
 
 type powerShellDocument struct {
-	ParseErrors  []string                `json:"parse_errors"`
-	Commands     []powerShellCommand     `json:"commands"`
-	Pipelines    []powerShellPipeline    `json:"pipelines"`
-	Redirections []powerShellRedirection `json:"redirections"`
+	ParseErrors         []string                `json:"parse_errors"`
+	Commands            []powerShellCommand     `json:"commands"`
+	Pipelines           []powerShellPipeline    `json:"pipelines"`
+	Redirections        []powerShellRedirection `json:"redirections"`
+	SingleDirectCommand bool                    `json:"single_direct_command"`
 }
 
 type powerShellCommand struct {
@@ -141,11 +142,20 @@ $redirections = @(
     }
 )
 
+$singleDirectCommand = $false
+if ($parseErrors.Count -eq 0 -and $ast.EndBlock.Statements.Count -eq 1) {
+    $statement = $ast.EndBlock.Statements[0]
+    if ($statement -is [System.Management.Automation.Language.PipelineAst] -and $statement.PipelineElements.Count -eq 1 -and $statement.PipelineElements[0] -is [System.Management.Automation.Language.CommandAst]) {
+        $singleDirectCommand = $true
+    }
+}
+
 $result = [pscustomobject] [ordered] @{
     parse_errors = @($parseErrors | ForEach-Object { [string] $_.Message })
     commands = @($commands)
     pipelines = @($pipelines)
     redirections = @($redirections)
+    single_direct_command = $singleDirectCommand
 }
 
 $json = $result | ConvertTo-Json -Depth 10 -Compress
@@ -166,6 +176,9 @@ func (a *analyzer) analyzePowerShellSource(source string, depth int) {
 	if len(document.ParseErrors) > 0 {
 		a.add(Review, "shell-parse-risk", "powershell", "")
 	}
+	previousEligibility := a.protectedGitExceptionEligible
+	a.protectedGitExceptionEligible = eligiblePowerShellProtectedGitException(document, depth)
+	defer func() { a.protectedGitExceptionEligible = previousEligibility }()
 	for _, command := range document.Commands {
 		a.inspectPowerShellCommand(command, depth)
 	}
@@ -183,12 +196,32 @@ func (a *analyzer) analyzePowerShellSource(source string, depth int) {
 	}
 }
 
+func eligiblePowerShellProtectedGitException(document powerShellDocument, depth int) bool {
+	if depth != 0 || !document.SingleDirectCommand || len(document.ParseErrors) > 0 || len(document.Commands) != 1 || len(document.Pipelines) > 0 || len(document.Redirections) > 0 {
+		return false
+	}
+	command := document.Commands[0]
+	if !command.NameKnown || normalizeCommandName(command.Name) != "git" {
+		return false
+	}
+	invocationOperator := strings.ToLower(command.InvocationOperator)
+	if invocationOperator != "" && invocationOperator != "unknown" {
+		return false
+	}
+	for _, element := range command.Elements {
+		if !element.Known {
+			return false
+		}
+	}
+	return true
+}
+
 func parsePowerShell(source string) (powerShellDocument, error) {
 	executable, err := findPowerShell()
 	if err != nil {
 		return powerShellDocument{}, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	command := exec.CommandContext(ctx, executable, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", powerShellParserScript)
 	command.Stdin = strings.NewReader(base64.StdEncoding.EncodeToString([]byte(source)))
