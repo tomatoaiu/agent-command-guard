@@ -11,6 +11,7 @@ import (
 func TestAnalyzeFilePolicy(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	workspace := filepath.Join(home, "work", "project")
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
 		t.Fatal(err)

@@ -221,7 +221,7 @@ func parsePowerShell(source string) (powerShellDocument, error) {
 	if err != nil {
 		return powerShellDocument{}, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	command := exec.CommandContext(ctx, executable, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", powerShellParserScript)
 	command.Stdin = strings.NewReader(base64.StdEncoding.EncodeToString([]byte(source)))
