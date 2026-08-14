@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/tomatoaiu/agent-command-guard/compare/v0.1.0...v0.2.0) (2026-08-14)
+
+
+### Features
+
+* add direct file and structured Git policies ([#22](https://github.com/tomatoaiu/agent-command-guard/issues/22)) ([0cee999](https://github.com/tomatoaiu/agent-command-guard/commit/0cee999cadbdca4ac7bbc6721739203bc34ad7d2))
+
 ## 0.1.0 (2026-08-13)
 
 
