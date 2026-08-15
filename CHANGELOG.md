@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/tomatoaiu/agent-command-guard/compare/v0.3.0...v0.4.0) (2026-08-15)
+
+
+### Features
+
+* explain ineligible protected branch exceptions ([#27](https://github.com/tomatoaiu/agent-command-guard/issues/27)) ([da9718d](https://github.com/tomatoaiu/agent-command-guard/commit/da9718de67cfa4d9270ae1ee4a724c8dadb3e9b1))
+
 ## [0.3.0](https://github.com/tomatoaiu/agent-command-guard/compare/v0.2.0...v0.3.0) (2026-08-14)
 
 
