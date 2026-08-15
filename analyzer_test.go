@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -317,6 +318,37 @@ func TestAgentProtocolMapping(t *testing.T) {
 		if got := specific["permissionDecision"]; got != test.expected {
 			t.Errorf("%s review mapping: got %v, want %s", test.agent, got, test.expected)
 		}
+	}
+}
+
+func TestProtectedBranchExceptionDiagnosticReachesCodexHook(t *testing.T) {
+	repository := committedRepository(t, "main")
+	config := Config{
+		Git: GitConfig{ProtectedBranchExceptions: []GitProtectedBranchException{
+			{Repository: repository, Branch: "main", Operations: []string{"push"}, Remote: "origin"},
+		}},
+		Output: OutputConfig{Language: "ja"},
+	}
+	if err := config.prepare(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+
+	result := analyzePOSIXWithConfig("git push origin main && git status", repository, config)
+	if result.Decision != Block || !hasRule(result, "protected-branch-exception-compound-command") {
+		t.Fatalf("got decision=%s findings=%+v", result.Decision, result.Findings)
+	}
+	want := "構造化された保護ブランチ例外には一致しましたが、複合コマンド内では適用されません。保護されたGit操作を単独で実行してください。"
+	if len(result.Findings) == 0 || result.Findings[0].Message != want {
+		t.Fatalf("finding message: %+v", result.Findings)
+	}
+	if !strings.HasPrefix(result.Message, want) {
+		t.Fatalf("result message: %q", result.Message)
+	}
+
+	output := hookDecision("codex", result)
+	specific := output["hookSpecificOutput"].(map[string]any)
+	if specific["permissionDecision"] != "deny" || specific["permissionDecisionReason"] != result.Message {
+		t.Fatalf("hook output: %+v", specific)
 	}
 }
 

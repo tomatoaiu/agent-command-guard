@@ -13,6 +13,22 @@ const (
 	gitOperationPush   = "push"
 )
 
+type protectedGitExceptionEligibility struct {
+	Eligible bool
+	Reason   protectedGitExceptionIneligibility
+}
+
+type protectedGitExceptionIneligibility string
+
+const (
+	protectedGitExceptionEligible protectedGitExceptionIneligibility = ""
+
+	protectedGitExceptionCompoundCommand protectedGitExceptionIneligibility = "compound-command"
+	protectedGitExceptionPipeline        protectedGitExceptionIneligibility = "pipeline"
+	protectedGitExceptionRedirection     protectedGitExceptionIneligibility = "redirection"
+	protectedGitExceptionIndirect        protectedGitExceptionIneligibility = "indirect-invocation"
+)
+
 // GitProtectedBranchException is a narrow, structured exception to the
 // built-in protected-branch policy. Each entry identifies one repository and
 // branch exactly. Push exceptions additionally identify one remote alias.
@@ -149,10 +165,7 @@ func gitRepositoryRoot(cwd string) string {
 	return canonicalFilesystemPath(root)
 }
 
-func (a *analyzer) allowsProtectedBranchException(operation, gitCWD, branch, remote string) bool {
-	if !a.protectedGitExceptionEligible {
-		return false
-	}
+func (a *analyzer) matchesProtectedBranchException(operation, gitCWD, branch, remote string) bool {
 	repository := gitRepositoryRoot(gitCWD)
 	if repository == "" {
 		return false
@@ -167,6 +180,21 @@ func (a *analyzer) allowsProtectedBranchException(operation, gitCWD, branch, rem
 		return true
 	}
 	return false
+}
+
+func protectedGitExceptionRuleID(reason protectedGitExceptionIneligibility) string {
+	switch reason {
+	case protectedGitExceptionCompoundCommand:
+		return "protected-branch-exception-compound-command"
+	case protectedGitExceptionPipeline:
+		return "protected-branch-exception-pipeline"
+	case protectedGitExceptionRedirection:
+		return "protected-branch-exception-redirection"
+	case protectedGitExceptionIndirect:
+		return "protected-branch-exception-indirect-invocation"
+	default:
+		return "protected-branch-exception-requires-standalone"
+	}
 }
 
 func safeProtectedCommitArguments(args []string, known []bool) bool {

@@ -34,14 +34,14 @@ type Result struct {
 }
 
 type analyzer struct {
-	cwd                           string
-	home                          string
-	shell                         ShellDialect
-	language                      string
-	protectedBranches             []string
-	protectedBranchExceptions     []GitProtectedBranchException
-	protectedGitExceptionEligible bool
-	findings                      []Finding
+	cwd                              string
+	home                             string
+	shell                            ShellDialect
+	language                         string
+	protectedBranches                []string
+	protectedBranchExceptions        []GitProtectedBranchException
+	protectedGitExceptionEligibility protectedGitExceptionEligibility
+	findings                         []Finding
 }
 
 func Analyze(command, cwd string) Result {
@@ -93,9 +93,9 @@ func (a *analyzer) analyzePOSIXSource(source string, depth int) {
 		}
 		return
 	}
-	previousEligibility := a.protectedGitExceptionEligible
-	a.protectedGitExceptionEligible = eligiblePOSIXProtectedGitException(file, depth, a.home)
-	defer func() { a.protectedGitExceptionEligible = previousEligibility }()
+	previousEligibility := a.protectedGitExceptionEligibility
+	a.protectedGitExceptionEligibility = eligiblePOSIXProtectedGitException(file, depth, a.home)
+	defer func() { a.protectedGitExceptionEligibility = previousEligibility }()
 	syntax.Walk(file, func(node syntax.Node) bool {
 		switch node := node.(type) {
 		case *syntax.CallExpr:
@@ -111,21 +111,38 @@ func (a *analyzer) analyzePOSIXSource(source string, depth int) {
 	})
 }
 
-func eligiblePOSIXProtectedGitException(file *syntax.File, depth int, home string) bool {
-	if depth != 0 || len(file.Stmts) != 1 {
-		return false
+func eligiblePOSIXProtectedGitException(file *syntax.File, depth int, home string) protectedGitExceptionEligibility {
+	if depth != 0 {
+		return protectedGitExceptionEligibility{Reason: protectedGitExceptionIndirect}
+	}
+	if len(file.Stmts) != 1 {
+		return protectedGitExceptionEligibility{Reason: protectedGitExceptionCompoundCommand}
 	}
 	statement := file.Stmts[0]
-	if statement.Negated || statement.Background || statement.Coprocess || len(statement.Redirs) > 0 {
-		return false
+	if binary, ok := statement.Cmd.(*syntax.BinaryCmd); ok {
+		switch binary.Op {
+		case syntax.Pipe, syntax.PipeAll:
+			return protectedGitExceptionEligibility{Reason: protectedGitExceptionPipeline}
+		default:
+			return protectedGitExceptionEligibility{Reason: protectedGitExceptionCompoundCommand}
+		}
+	}
+	if len(statement.Redirs) > 0 {
+		return protectedGitExceptionEligibility{Reason: protectedGitExceptionRedirection}
+	}
+	if statement.Negated || statement.Background || statement.Coprocess {
+		return protectedGitExceptionEligibility{Reason: protectedGitExceptionIndirect}
 	}
 	call, ok := statement.Cmd.(*syntax.CallExpr)
 	if !ok || len(call.Assigns) > 0 || len(call.Args) == 0 {
-		return false
+		return protectedGitExceptionEligibility{Reason: protectedGitExceptionIndirect}
 	}
 	command := evalWord(call.Args[0], home)
-	if !command.Known || normalizeCommandName(command.Value) != "git" {
-		return false
+	if !command.Known {
+		return protectedGitExceptionEligibility{}
+	}
+	if normalizeCommandName(command.Value) != "git" {
+		return protectedGitExceptionEligibility{Reason: protectedGitExceptionIndirect}
 	}
 	callCount := 0
 	syntax.Walk(file, func(node syntax.Node) bool {
@@ -134,7 +151,10 @@ func eligiblePOSIXProtectedGitException(file *syntax.File, depth int, home strin
 		}
 		return true
 	})
-	return callCount == 1
+	if callCount != 1 {
+		return protectedGitExceptionEligibility{Reason: protectedGitExceptionIndirect}
+	}
+	return protectedGitExceptionEligibility{Eligible: true, Reason: protectedGitExceptionEligible}
 }
 
 func (a *analyzer) inspectPOSIXCall(call *syntax.CallExpr, depth int) {
@@ -738,11 +758,19 @@ func (a *analyzer) inspectGit(args []string, known []bool) {
 			return
 		}
 		if branch := currentBranch(gitCWD); a.protectedBranch(branch, gitCWD) {
-			if globalsSafeForException && safeProtectedCommitArguments(rest, restKnown) && a.allowsProtectedBranchException(gitOperationCommit, gitCWD, branch, "") {
-				a.add(Allow, "protected-branch-exception", "git", branch)
-			} else {
+			if !globalsSafeForException || !safeProtectedCommitArguments(rest, restKnown) {
 				a.add(Block, "protected-branch-direct-commit", "git", branch)
+				return
 			}
+			if !a.matchesProtectedBranchException(gitOperationCommit, gitCWD, branch, "") {
+				a.add(Block, "protected-branch-direct-commit", "git", branch)
+				return
+			}
+			if a.protectedGitExceptionEligibility.Eligible {
+				a.add(Allow, "protected-branch-exception", "git", branch)
+				return
+			}
+			a.add(Block, protectedGitExceptionRuleID(a.protectedGitExceptionEligibility.Reason), "git", branch)
 		}
 	}
 }
@@ -809,11 +837,19 @@ func (a *analyzer) inspectGitPush(args []string, known []bool, gitCWD string, gl
 	for _, target := range targets {
 		target = pushedBranch(target, currentBranch(gitCWD))
 		if !initialPush && target != "" && a.protectedBranch(target, gitCWD) {
-			if globalsSafeForException && exactProtectedPush(parsed, target) && a.allowsProtectedBranchException(gitOperationPush, gitCWD, target, parsed.remote) {
+			if !globalsSafeForException || !exactProtectedPush(parsed, target) {
+				a.add(Block, "protected-branch-push", "git", target)
+				return
+			}
+			if !a.matchesProtectedBranchException(gitOperationPush, gitCWD, target, parsed.remote) {
+				a.add(Block, "protected-branch-push", "git", target)
+				return
+			}
+			if a.protectedGitExceptionEligibility.Eligible {
 				a.add(Allow, "protected-branch-exception", "git", target)
 				continue
 			}
-			a.add(Block, "protected-branch-push", "git", target)
+			a.add(Block, protectedGitExceptionRuleID(a.protectedGitExceptionEligibility.Reason), "git", target)
 			return
 		}
 	}

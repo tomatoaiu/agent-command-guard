@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"mvdan.cc/sh/v3/syntax"
 )
 
 func TestProtectedBranchExceptionAllowsOnlyExactMatrixCells(t *testing.T) {
@@ -76,15 +78,24 @@ func TestProtectedBranchExceptionAllowsOnlyExactMatrixCells(t *testing.T) {
 		{"no verify", "git commit --no-verify -m test", repository, "protected-branch-direct-commit"},
 		{"short no verify", "git commit -n -m test", repository, "protected-branch-direct-commit"},
 		{"dynamic commit argument", `git commit -m "$(printf test)"`, repository, "protected-branch-direct-commit"},
-		{"composite commit and push", "git commit -m test && git push origin main", repository, "protected-branch-direct-commit"},
-		{"composite push", "git push origin main; true", repository, "protected-branch-push"},
-		{"nested shell", `bash -c 'git commit -m test'`, repository, "protected-branch-direct-commit"},
-		{"subshell", `(git commit -m test)`, repository, "protected-branch-direct-commit"},
-		{"redirect", `git commit -m test > /tmp/commit.log`, repository, "protected-branch-direct-commit"},
-		{"environment wrapper", `env GIT_CONFIG_NOSYSTEM=1 git commit -m test`, repository, "protected-branch-direct-commit"},
-		{"assignment wrapper", `GIT_CONFIG_NOSYSTEM=1 git commit -m test`, repository, "protected-branch-direct-commit"},
-		{"command wrapper", `command git commit -m test`, repository, "protected-branch-direct-commit"},
-		{"exec wrapper", `exec git commit -m test`, repository, "protected-branch-direct-commit"},
+		{"compound commit and push", "git commit -m test && git push origin main", repository, "protected-branch-exception-compound-command"},
+		{"compound push and status", "git push origin main && git status", repository, "protected-branch-exception-compound-command"},
+		{"compound push separator", "git push origin main; true", repository, "protected-branch-exception-compound-command"},
+		{"commit pipeline", `git commit -m test | tee commit.log`, repository, "protected-branch-exception-pipeline"},
+		{"push pipeline", `git push origin main | tee push.log`, repository, "protected-branch-exception-pipeline"},
+		{"commit redirect", `git commit -m test > commit.log`, repository, "protected-branch-exception-redirection"},
+		{"push redirect", `git push origin main > push.log`, repository, "protected-branch-exception-redirection"},
+		{"nested commit shell", `bash -c 'git commit -m test'`, repository, "protected-branch-exception-indirect-invocation"},
+		{"nested push shell", `bash -c 'git push origin main'`, repository, "protected-branch-exception-indirect-invocation"},
+		{"commit subshell", `(git commit -m test)`, repository, "protected-branch-exception-indirect-invocation"},
+		{"push subshell", `(git push origin main)`, repository, "protected-branch-exception-indirect-invocation"},
+		{"environment commit wrapper", `env GIT_CONFIG_NOSYSTEM=1 git commit -m test`, repository, "protected-branch-exception-indirect-invocation"},
+		{"environment push wrapper", `env GIT_CONFIG_NOSYSTEM=1 git push origin main`, repository, "protected-branch-exception-indirect-invocation"},
+		{"assignment wrapper", `GIT_CONFIG_NOSYSTEM=1 git commit -m test`, repository, "protected-branch-exception-indirect-invocation"},
+		{"command wrapper", `command git push origin main`, repository, "protected-branch-exception-indirect-invocation"},
+		{"exec wrapper", `exec git push origin main`, repository, "protected-branch-exception-indirect-invocation"},
+		{"compound wrong remote", `git push upstream main && git status`, repository, "protected-branch-push"},
+		{"compound force", `git push --force origin main && git status`, repository, "protected-branch-push"},
 		{"git config override", `git -c core.hooksPath=/dev/null commit -m test`, repository, "protected-branch-direct-commit"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -95,7 +106,73 @@ func TestProtectedBranchExceptionAllowsOnlyExactMatrixCells(t *testing.T) {
 			if hasRule(result, "protected-branch-exception") {
 				t.Fatalf("unsafe command received the exception: %+v", result.Findings)
 			}
+			if !strings.HasPrefix(test.rule, "protected-branch-exception-") {
+				for _, finding := range result.Findings {
+					if strings.HasPrefix(finding.RuleID, "protected-branch-exception-") {
+						t.Fatalf("configuration or argument mismatch received a shell ineligibility rule: %+v", result.Findings)
+					}
+				}
+			}
 		})
+	}
+
+	for _, command := range []string{`git push origin "$BRANCH"`, `git push "$REMOTE" main`} {
+		result := analyzePOSIXWithConfig(command, repository, config)
+		if result.Decision != Review || !hasRule(result, "git-dynamic-push-ref") {
+			t.Fatalf("%q: got decision=%s findings=%+v", command, result.Decision, result.Findings)
+		}
+		for _, finding := range result.Findings {
+			if strings.HasPrefix(finding.RuleID, "protected-branch-exception-") {
+				t.Fatalf("%q: dynamic value reported a matching exception: %+v", command, result.Findings)
+			}
+		}
+	}
+}
+
+func TestEligiblePOSIXProtectedGitExceptionReasons(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		command  string
+		depth    int
+		eligible bool
+		reason   protectedGitExceptionIneligibility
+	}{
+		{"direct", "git push origin main", 0, true, protectedGitExceptionEligible},
+		{"multiple statements", "git push origin main; git status", 0, false, protectedGitExceptionCompoundCommand},
+		{"and chain", "git push origin main && git status", 0, false, protectedGitExceptionCompoundCommand},
+		{"pipeline", "git push origin main | tee push.log", 0, false, protectedGitExceptionPipeline},
+		{"redirection", "git push origin main > push.log", 0, false, protectedGitExceptionRedirection},
+		{"subshell", "(git push origin main)", 0, false, protectedGitExceptionIndirect},
+		{"wrapper", "env GIT_CONFIG_NOSYSTEM=1 git push origin main", 0, false, protectedGitExceptionIndirect},
+		{"assignment", "GIT_CONFIG_NOSYSTEM=1 git commit -m test", 0, false, protectedGitExceptionIndirect},
+		{"negation", "! git push origin main", 0, false, protectedGitExceptionIndirect},
+		{"background", "git push origin main &", 0, false, protectedGitExceptionIndirect},
+		{"nested", "git push origin main", 1, false, protectedGitExceptionIndirect},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			file, err := syntax.NewParser(syntax.Variant(syntax.LangBash)).Parse(strings.NewReader(test.command), "test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := eligiblePOSIXProtectedGitException(file, test.depth, userHomeDir())
+			if got.Eligible != test.eligible || got.Reason != test.reason {
+				t.Fatalf("got %+v, want eligible=%t reason=%q", got, test.eligible, test.reason)
+			}
+		})
+	}
+}
+
+func TestProtectedGitExceptionRuleID(t *testing.T) {
+	for reason, want := range map[protectedGitExceptionIneligibility]string{
+		protectedGitExceptionCompoundCommand: "protected-branch-exception-compound-command",
+		protectedGitExceptionPipeline:        "protected-branch-exception-pipeline",
+		protectedGitExceptionRedirection:     "protected-branch-exception-redirection",
+		protectedGitExceptionIndirect:        "protected-branch-exception-indirect-invocation",
+		"unknown":                            "protected-branch-exception-requires-standalone",
+	} {
+		if got := protectedGitExceptionRuleID(reason); got != want {
+			t.Errorf("reason %q: got %q, want %q", reason, got, want)
+		}
 	}
 }
 

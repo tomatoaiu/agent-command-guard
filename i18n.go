@@ -71,6 +71,12 @@ var findingMessages = map[string]translations{
 	"sensitive-file-write":           {"Writing to a credential, persistence, or agent control path was blocked.", "認証情報、永続化、またはagent制御パスへの書き込みをブロックしました。"},
 	"shell-profile-write":            {"Writing to a Zsh profile requires review.", "Zshプロファイルへの書き込みは確認が必要です。"},
 	"outside-workspace-write":        {"Writing outside the current workspace requires review.", "現在のworkspace外への書き込みは確認が必要です。"},
+
+	"protected-branch-exception-compound-command":    {"The structured protected-branch exception matched, but it does not apply inside a compound command. Run the protected Git operation separately.", "構造化された保護ブランチ例外には一致しましたが、複合コマンド内では適用されません。保護されたGit操作を単独で実行してください。"},
+	"protected-branch-exception-pipeline":            {"The structured protected-branch exception matched, but it does not apply inside a pipeline. Run the protected Git operation separately.", "構造化された保護ブランチ例外には一致しましたが、pipeline内では適用されません。保護されたGit操作を単独で実行してください。"},
+	"protected-branch-exception-redirection":         {"The structured protected-branch exception matched, but it does not apply to an invocation with redirection. Run the protected Git operation separately.", "構造化された保護ブランチ例外には一致しましたが、redirectionを伴う実行には適用されません。保護されたGit操作を単独で実行してください。"},
+	"protected-branch-exception-indirect-invocation": {"The structured protected-branch exception matched, but it does not apply through wrappers, subshells, assignments, or other indirect invocation. Run Git directly as a standalone command.", "構造化された保護ブランチ例外には一致しましたが、wrapper、subshell、環境変数代入などを介した間接実行には適用されません。Gitを直接かつ単独で実行してください。"},
+	"protected-branch-exception-requires-standalone": {"The structured protected-branch exception matched, but it does not apply to this invocation shape. Run the protected Git operation directly as a standalone command.", "構造化された保護ブランチ例外には一致しましたが、この実行形式には適用されません。保護されたGit操作を直接かつ単独で実行してください。"},
 }
 
 func findingMessage(language string, finding Finding) string {
