@@ -101,25 +101,31 @@ func TestPowerShellProtectedGitExceptionRequiresOneDirectCommand(t *testing.T) {
 		},
 	}
 	base := powerShellDocument{SingleDirectCommand: true, Commands: []powerShellCommand{directGit}}
-	if !eligiblePowerShellProtectedGitException(base, 0) {
-		t.Fatal("one direct literal Git command should be eligible")
+	if got := eligiblePowerShellProtectedGitException(base, 0); !got.Eligible || got.Reason != protectedGitExceptionEligible {
+		t.Fatalf("one direct literal Git command should be eligible: %+v", got)
 	}
 
+	status := powerShellCommand{Name: "git", NameKnown: true, Elements: []powerShellElement{{Value: "status", Known: true}}}
 	for _, test := range []struct {
 		name     string
 		document powerShellDocument
 		depth    int
+		reason   protectedGitExceptionIneligibility
 	}{
-		{"assignment or compound statement", powerShellDocument{Commands: []powerShellCommand{directGit}}, 0},
-		{"nested", base, 1},
-		{"dynamic argument", powerShellDocument{SingleDirectCommand: true, Commands: []powerShellCommand{{Name: "git", NameKnown: true, Elements: []powerShellElement{{Known: false}}}}}, 0},
-		{"call operator", powerShellDocument{SingleDirectCommand: true, Commands: []powerShellCommand{{Name: "git", NameKnown: true, InvocationOperator: "Ampersand"}}}, 0},
-		{"pipeline", powerShellDocument{SingleDirectCommand: true, Commands: []powerShellCommand{directGit}, Pipelines: []powerShellPipeline{{}}}, 0},
-		{"redirection", powerShellDocument{SingleDirectCommand: true, Commands: []powerShellCommand{directGit}, Redirections: []powerShellRedirection{{}}}, 0},
+		{"compound statement", powerShellDocument{Commands: []powerShellCommand{directGit, status}}, 0, protectedGitExceptionCompoundCommand},
+		{"multiple statements with one command", powerShellDocument{Commands: []powerShellCommand{directGit}, StatementCount: 2}, 0, protectedGitExceptionCompoundCommand},
+		{"chain", powerShellDocument{Commands: []powerShellCommand{directGit, status}, HasChain: true}, 0, protectedGitExceptionCompoundCommand},
+		{"assignment", powerShellDocument{Commands: []powerShellCommand{directGit}, StatementCount: 2, HasAssignment: true}, 0, protectedGitExceptionIndirect},
+		{"nested", base, 1, protectedGitExceptionIndirect},
+		{"dynamic argument", powerShellDocument{SingleDirectCommand: true, Commands: []powerShellCommand{{Name: "git", NameKnown: true, Elements: []powerShellElement{{Known: false}}}}}, 0, protectedGitExceptionEligible},
+		{"call operator", powerShellDocument{SingleDirectCommand: true, Commands: []powerShellCommand{{Name: "git", NameKnown: true, InvocationOperator: "Ampersand"}}}, 0, protectedGitExceptionIndirect},
+		{"pipeline", powerShellDocument{SingleDirectCommand: true, Commands: []powerShellCommand{directGit}, Pipelines: []powerShellPipeline{{}}}, 0, protectedGitExceptionPipeline},
+		{"redirection", powerShellDocument{SingleDirectCommand: true, Commands: []powerShellCommand{directGit}, Redirections: []powerShellRedirection{{}}}, 0, protectedGitExceptionRedirection},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if eligiblePowerShellProtectedGitException(test.document, test.depth) {
-				t.Fatal("unsafe PowerShell shape was eligible")
+			got := eligiblePowerShellProtectedGitException(test.document, test.depth)
+			if got.Eligible || got.Reason != test.reason {
+				t.Fatalf("got %+v, want ineligible reason=%q", got, test.reason)
 			}
 		})
 	}
@@ -146,13 +152,30 @@ func TestPowerShellProtectedGitExceptionEndToEnd(t *testing.T) {
 			t.Fatalf("%q: got decision=%s findings=%+v", command, result.Decision, result.Findings)
 		}
 	}
-	for _, command := range []string{
-		"$env:GIT_CONFIG_NOSYSTEM = '1'; git commit -m test",
-		"git commit -m test; git push origin main",
+	for _, test := range []struct {
+		command string
+		rule    string
+	}{
+		{"git push origin main; git status", "protected-branch-exception-compound-command"},
+		{"git commit -m test; git push origin main", "protected-branch-exception-compound-command"},
+		{"git push origin main | Out-String", "protected-branch-exception-pipeline"},
+		{"git push origin main > push.log", "protected-branch-exception-redirection"},
+		{"& git push origin main", "protected-branch-exception-indirect-invocation"},
+		{"$env:GIT_CONFIG_NOSYSTEM = '1'; git commit -m test", "protected-branch-exception-indirect-invocation"},
+		{"powershell -Command 'git push origin main'", "protected-branch-exception-indirect-invocation"},
+		{"git push upstream main; git status", "protected-branch-push"},
+		{"git push --force origin main; git status", "protected-branch-push"},
 	} {
-		result := AnalyzeWithConfigAndShell(command, repository, config, ShellPowerShell)
-		if result.Decision != Block || hasRule(result, "protected-branch-exception") {
-			t.Fatalf("%q: got decision=%s findings=%+v", command, result.Decision, result.Findings)
+		result := AnalyzeWithConfigAndShell(test.command, repository, config, ShellPowerShell)
+		if result.Decision != Block || !hasRule(result, test.rule) || hasRule(result, "protected-branch-exception") {
+			t.Fatalf("%q: got decision=%s findings=%+v, want block rule=%s", test.command, result.Decision, result.Findings, test.rule)
+		}
+		if !strings.HasPrefix(test.rule, "protected-branch-exception-") {
+			for _, finding := range result.Findings {
+				if strings.HasPrefix(finding.RuleID, "protected-branch-exception-") {
+					t.Fatalf("%q: argument mismatch received a shell ineligibility rule: %+v", test.command, result.Findings)
+				}
+			}
 		}
 	}
 }

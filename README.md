@@ -358,6 +358,39 @@ composition, substitutions, wrappers, redirections, and environment or Git
 configuration overrides do not receive the exception. These constraints are
 built in and cannot be relaxed by fields in the structured entry.
 
+A matching structured exception still requires one direct, standalone Git
+invocation. This is allowed:
+
+```sh
+git push origin main
+```
+
+Combining the same protected operation with another command is blocked with an
+actionable `protected-branch-exception-*` diagnostic:
+
+```sh
+git push origin main && git status
+```
+
+Run the protected operation and follow-up checks as separate tool calls instead:
+
+```sh
+git push origin main
+```
+
+```sh
+git fetch origin
+git rev-parse HEAD
+git rev-parse origin/main
+git status --short --branch
+```
+
+The diagnostic distinguishes compound commands, pipelines, redirections, and
+indirect invocation through wrappers, subshells, or assignments. A wrong
+repository, branch, remote, or an unsafe Git argument still receives the usual
+protected-branch rule because splitting the shell command would not make that
+operation eligible.
+
 ## Development
 
 ```sh

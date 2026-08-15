@@ -21,6 +21,9 @@ type powerShellDocument struct {
 	Pipelines           []powerShellPipeline    `json:"pipelines"`
 	Redirections        []powerShellRedirection `json:"redirections"`
 	SingleDirectCommand bool                    `json:"single_direct_command"`
+	StatementCount      int                     `json:"statement_count"`
+	HasAssignment       bool                    `json:"has_assignment"`
+	HasChain            bool                    `json:"has_chain"`
 }
 
 type powerShellCommand struct {
@@ -142,6 +145,20 @@ $redirections = @(
     }
 )
 
+$hasAssignment = @(
+    $ast.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.AssignmentStatementAst]
+    }, $true)
+).Count -gt 0
+
+$hasChain = @(
+    $ast.FindAll({
+        param($node)
+        $node.GetType().Name -eq 'PipelineChainAst'
+    }, $true)
+).Count -gt 0
+
 $singleDirectCommand = $false
 if ($parseErrors.Count -eq 0 -and $ast.EndBlock.Statements.Count -eq 1) {
     $statement = $ast.EndBlock.Statements[0]
@@ -156,6 +173,9 @@ $result = [pscustomobject] [ordered] @{
     pipelines = @($pipelines)
     redirections = @($redirections)
     single_direct_command = $singleDirectCommand
+    statement_count = [int] $ast.EndBlock.Statements.Count
+    has_assignment = $hasAssignment
+    has_chain = $hasChain
 }
 
 $json = $result | ConvertTo-Json -Depth 10 -Compress
@@ -176,9 +196,9 @@ func (a *analyzer) analyzePowerShellSource(source string, depth int) {
 	if len(document.ParseErrors) > 0 {
 		a.add(Review, "shell-parse-risk", "powershell", "")
 	}
-	previousEligibility := a.protectedGitExceptionEligible
-	a.protectedGitExceptionEligible = eligiblePowerShellProtectedGitException(document, depth)
-	defer func() { a.protectedGitExceptionEligible = previousEligibility }()
+	previousEligibility := a.protectedGitExceptionEligibility
+	a.protectedGitExceptionEligibility = eligiblePowerShellProtectedGitException(document, depth)
+	defer func() { a.protectedGitExceptionEligibility = previousEligibility }()
 	for _, command := range document.Commands {
 		a.inspectPowerShellCommand(command, depth)
 	}
@@ -196,24 +216,48 @@ func (a *analyzer) analyzePowerShellSource(source string, depth int) {
 	}
 }
 
-func eligiblePowerShellProtectedGitException(document powerShellDocument, depth int) bool {
-	if depth != 0 || !document.SingleDirectCommand || len(document.ParseErrors) > 0 || len(document.Commands) != 1 || len(document.Pipelines) > 0 || len(document.Redirections) > 0 {
-		return false
+func eligiblePowerShellProtectedGitException(document powerShellDocument, depth int) protectedGitExceptionEligibility {
+	if depth != 0 {
+		return protectedGitExceptionEligibility{Reason: protectedGitExceptionIndirect}
+	}
+	if len(document.ParseErrors) > 0 {
+		return protectedGitExceptionEligibility{}
+	}
+	if document.HasAssignment {
+		return protectedGitExceptionEligibility{Reason: protectedGitExceptionIndirect}
+	}
+	if document.StatementCount > 1 || document.HasChain {
+		return protectedGitExceptionEligibility{Reason: protectedGitExceptionCompoundCommand}
+	}
+	if len(document.Pipelines) > 0 {
+		return protectedGitExceptionEligibility{Reason: protectedGitExceptionPipeline}
+	}
+	if len(document.Redirections) > 0 {
+		return protectedGitExceptionEligibility{Reason: protectedGitExceptionRedirection}
+	}
+	if len(document.Commands) > 1 {
+		return protectedGitExceptionEligibility{Reason: protectedGitExceptionCompoundCommand}
+	}
+	if !document.SingleDirectCommand || len(document.Commands) != 1 {
+		return protectedGitExceptionEligibility{Reason: protectedGitExceptionIndirect}
 	}
 	command := document.Commands[0]
-	if !command.NameKnown || normalizeCommandName(command.Name) != "git" {
-		return false
+	if !command.NameKnown {
+		return protectedGitExceptionEligibility{}
+	}
+	if normalizeCommandName(command.Name) != "git" {
+		return protectedGitExceptionEligibility{Reason: protectedGitExceptionIndirect}
 	}
 	invocationOperator := strings.ToLower(command.InvocationOperator)
 	if invocationOperator != "" && invocationOperator != "unknown" {
-		return false
+		return protectedGitExceptionEligibility{Reason: protectedGitExceptionIndirect}
 	}
 	for _, element := range command.Elements {
 		if !element.Known {
-			return false
+			return protectedGitExceptionEligibility{}
 		}
 	}
-	return true
+	return protectedGitExceptionEligibility{Eligible: true, Reason: protectedGitExceptionEligible}
 }
 
 func parsePowerShell(source string) (powerShellDocument, error) {
