@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/tomatoaiu/agent-command-guard/compare/v0.4.0...v0.5.0) (2026-08-17)
+
+
+### Features
+
+* 組み込みfindingを条件付きで抑止するsuppress機構を追加 ([#29](https://github.com/tomatoaiu/agent-command-guard/issues/29)) ([179032c](https://github.com/tomatoaiu/agent-command-guard/commit/179032c8d64c0cbcab0b64de6530d3db0dd9219f))
+
 ## [0.4.0](https://github.com/tomatoaiu/agent-command-guard/compare/v0.3.0...v0.4.0) (2026-08-15)
 
 
