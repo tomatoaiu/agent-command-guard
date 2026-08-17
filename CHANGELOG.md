@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/tomatoaiu/agent-command-guard/compare/v0.5.0...v0.5.1) (2026-08-17)
+
+
+### Bug Fixes
+
+* worktreeとmemoryの誤検知を解消しshell/file policyの保護範囲を統一 ([#31](https://github.com/tomatoaiu/agent-command-guard/issues/31)) ([a8e3011](https://github.com/tomatoaiu/agent-command-guard/commit/a8e301199031a9f12c98e6f9e03db6ab7d202ea2))
+
 ## [0.5.0](https://github.com/tomatoaiu/agent-command-guard/compare/v0.4.0...v0.5.0) (2026-08-17)
 
 
