@@ -1146,19 +1146,18 @@ func (a *analyzer) protectedPath(path string) bool {
 	protected := []string{
 		filepath.Join(a.home, ".ssh"), filepath.Join(a.home, ".gnupg"),
 		filepath.Join(a.home, ".aws"), filepath.Join(a.home, ".azure"),
-		filepath.Join(a.home, ".gcloud"), filepath.Join(a.home, ".claude", "hooks"),
-		filepath.Join(a.home, ".claude", "settings.json"), filepath.Join(a.home, ".codex", "hooks"),
-		filepath.Join(a.home, ".codex", "hooks.json"), filepath.Join(a.home, ".codex", "config.toml"),
-		filepath.Join(a.home, ".agents"), filepath.Join(a.home, ".local", "bin", "agent-command-guard"),
+		filepath.Join(a.home, ".gcloud"),
 	}
-	if configPath, err := DefaultConfigPath(); err == nil {
-		protected = append(protected, configPath)
-	}
-	if executable, err := os.Executable(); err == nil {
-		protected = append(protected, executable)
-	}
+	// Agent control roots are shared with the direct file policy so that a shell
+	// redirection cannot reach a path that Write/Edit refuses.
+	protected = append(protected, agentControlRoots(a.home)...)
 	for _, root := range protected {
 		if pathWithin(normalized, root) || pathWithin(resolved, resolvePathSymlinks(root)) {
+			// The agent memory store is written by the agent itself. The secret
+			// basename check below still applies to it.
+			if agentMemoryPath(normalized, a.home) {
+				continue
+			}
 			return true
 		}
 	}

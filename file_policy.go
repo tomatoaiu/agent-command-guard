@@ -77,7 +77,7 @@ func analyzeFileBuiltin(operation FileOperation, normalized, resolved string, a 
 			a.add(Block, "sensitive-file-write", string(operation), normalized)
 		} else if zshProfile(normalized) {
 			a.add(Review, "shell-profile-write", string(operation), normalized)
-		} else if !filePathWithin(resolved, resolvePathSymlinks(a.cwd)) {
+		} else if outsideWorkspace(normalized, resolved, a) {
 			a.add(Review, "outside-workspace-write", string(operation), normalized)
 		}
 	default:
@@ -156,7 +156,10 @@ func sensitiveWriteBlocked(normalized, resolved string, a *analyzer) bool {
 			return true
 		}
 		for _, root := range protectedFileWriteRoots(a) {
-			if pathMatchesRoot(path, root) {
+			// The agent memory store lives under an agent control root but is
+			// written by the agent itself, so it is exempt here. The credential,
+			// key, and persistence checks above still apply to it.
+			if pathMatchesRoot(path, root) && !agentMemoryPath(path, a.home) {
 				return true
 			}
 		}
@@ -250,20 +253,7 @@ func reviewCredentialPaths(home string) []string {
 }
 
 func protectedFileWriteRoots(a *analyzer) []string {
-	roots := []string{
-		filepath.Join(a.home, ".claude"),
-		filepath.Join(a.home, ".codex"),
-		filepath.Join(a.home, ".pi", "agent"),
-		filepath.Join(a.home, ".agents"),
-		filepath.Join(a.home, ".local", "bin", "agent-command-guard"),
-	}
-	if configPath, err := DefaultConfigPath(); err == nil {
-		roots = append(roots, configPath)
-	}
-	if executable, err := os.Executable(); err == nil {
-		roots = append(roots, executable)
-	}
-	return roots
+	return agentControlRoots(a.home)
 }
 
 func pathMatchesRoot(path, root string) bool {
