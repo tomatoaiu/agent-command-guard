@@ -30,6 +30,21 @@ integrations that use the Claude-style `PreToolUse` JSON protocol.
   destinations outside the current workspace
 - Symbolic-link paths, including missing targets below an existing link
 
+Agent control paths are one list, shared by the direct file policy and the shell
+policy, so a write that `Write`/`Edit` refuses cannot be performed through a
+shell redirection instead.
+
+Two locations are deliberately not treated as leaving the workspace:
+
+- A linked Git worktree of the same repository. A worktree lives outside the
+  main working tree, so comparing paths alone would review every edit made while
+  working in one. The repository directory shared by both is compared instead.
+- The agent memory store at `~/.claude/projects/<project>/memory`. An agent is
+  expected to record and prune its own memories there, and the directory holds
+  no configuration that could weaken this guard. The surrounding checks still
+  apply, so a credential file inside it is still blocked, and a path elsewhere
+  under `~/.claude/projects` remains protected.
+
 The policy is intentionally conservative, but it is not a sandbox. It cannot
 prove that an allowed command is harmless, and a process can perform actions
 that are not visible in its command-line syntax. Use it as one layer alongside
