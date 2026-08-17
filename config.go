@@ -12,10 +12,11 @@ import (
 )
 
 type Config struct {
-	Git       GitConfig    `toml:"git"`
-	Output    OutputConfig `toml:"output"`
-	Rules     []Rule       `toml:"rules"`
-	FileRules []FileRule   `toml:"file_rules"`
+	Git          GitConfig     `toml:"git"`
+	Output       OutputConfig  `toml:"output"`
+	Rules        []Rule        `toml:"rules"`
+	FileRules    []FileRule    `toml:"file_rules"`
+	Suppressions []Suppression `toml:"suppress"`
 }
 
 type OutputConfig struct {
@@ -122,7 +123,10 @@ func (c *Config) prepare(baseDir string) error {
 			rule.Directories[j] = expanded
 		}
 	}
-	return prepareFileRules(c.FileRules, baseDir, seen)
+	if err := prepareFileRules(c.FileRules, baseDir, seen); err != nil {
+		return err
+	}
+	return prepareSuppressions(c.Suppressions, baseDir)
 }
 
 func expandConfigPath(path, baseDir string) (string, error) {

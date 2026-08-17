@@ -41,6 +41,7 @@ type analyzer struct {
 	protectedBranches                []string
 	protectedBranchExceptions        []GitProtectedBranchException
 	protectedGitExceptionEligibility protectedGitExceptionEligibility
+	suppressions                     []Suppression
 	findings                         []Finding
 }
 
@@ -72,6 +73,7 @@ func AnalyzeWithConfigAndShell(command, cwd string, config Config, shell ShellDi
 		language:                  config.Output.Language,
 		protectedBranches:         config.Git.ProtectedBranches,
 		protectedBranchExceptions: config.Git.ProtectedBranchExceptions,
+		suppressions:              config.Suppressions,
 	}
 	if shell == ShellPowerShell {
 		a.analyzePowerShellSource(command, 0)
@@ -1041,6 +1043,9 @@ func (a *analyzer) result() Result {
 }
 
 func (a *analyzer) add(decision Decision, ruleID, command, target string) {
+	if a.suppresses(decision, ruleID, command) {
+		return
+	}
 	finding := Finding{Decision: decision, RuleID: ruleID, Command: command, Target: target}
 	finding.Message = findingMessage(a.language, finding)
 	a.findings = append(a.findings, finding)
