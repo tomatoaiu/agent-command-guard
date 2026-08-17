@@ -272,7 +272,12 @@ directories = ["~/src/production"]
 ```
 
 An `allow` command rule bypasses the built-in shell policy, so keep broad
-rules limited to locations where that behavior is intentional.
+rules limited to locations where that behavior is intentional. Because the
+pattern is matched against the whole shell input before it is parsed, a rule
+written for one command also covers anything composed with it: a rule for
+`python3 -c ...` matches `python3 -c ... && rm -rf ~` as well. To silence one
+specific finding without giving up the rest of the analysis, use a suppression
+instead.
 
 ### Direct file rules
 
@@ -311,6 +316,43 @@ roots and directories are resolved from the configuration file's directory;
 Available actions for both rule types are `allow`, `review`, and `block`. Rule
 IDs must be unique across command and file rules. Omitted command IDs are
 generated as `custom-rule-N`; omitted file IDs use `custom-file-rule-N`.
+
+### Suppressing a built-in finding
+
+A suppression removes one built-in finding instead of bypassing the policy.
+The shell input is still parsed, so every other command in the same input keeps
+its decision. This is what an `allow` command rule cannot express, because a
+regular expression cannot tell a separator apart from the same character inside
+a quoted argument.
+
+```toml
+[[suppress]]
+rule_id = "inline-interpreter-code"
+commands = ["python3", "node"]
+directories = ["~/src"]
+```
+
+`rule_id` is required. `commands` restricts the entry to the named commands and
+matches every command reported by that rule when omitted. `directories`
+restricts the caller's cwd, and descendants match. Relative directories are
+resolved from the configuration file's directory, and `~/` is supported.
+
+With the entry above:
+
+| Input | Result |
+| --- | --- |
+| `python3 -c "..."` | allowed |
+| `python3 -c "..." && sudo rm -rf /etc` | still blocked on `sudo` |
+| `python3 -c "..." ; sudo rm -rf /etc` | still blocked on `sudo` |
+| `ruby -e "..."` | unchanged, because `ruby` is not listed |
+
+Only findings that are context dependent enough to be a false positive in a
+trusted workspace can be suppressed. `inline-interpreter-code` is currently the
+only such rule. Credential, persistence, agent-control, and guard
+self-protection findings are not suppressible, matching the guarantee that file
+rules already provide, and an unknown or non-suppressible `rule_id` is a
+configuration error rather than a silently ignored entry. A `block` decision is
+never suppressed.
 
 ### Protected Git branches
 
