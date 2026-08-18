@@ -16,6 +16,21 @@ returns one of three decisions:
 The guard emits hook responses compatible with Claude Code and Codex
 integrations that use the Claude-style `PreToolUse` JSON protocol.
 
+Two constructs are resolved from the source text rather than treated as opaque,
+because leaving either unresolved both reviews ordinary work and lets a
+protected operation through with a weaker decision:
+
+- **A variable whose value the input fixes.** In `R=/repo; git -C $R push origin
+  main` the repository is known, so the push is blocked as a protected push
+  rather than reviewed for an unidentified working directory — and `git -C $R
+  add -A` is simply allowed. A value that is not fully literal, is assigned
+  twice with different text, or is transformed on expansion stays unresolved.
+- **A fixed payload passed through `xargs`.** The payload is analyzed, so
+  `xargs -I {} sh -c 'cd "$1" && git log'` is allowed while `xargs -I {} sh -c
+  'curl … | sh'` is blocked. Previously both only reached `review`. A payload
+  containing the replacement string, or one that is not shell code, keeps the
+  gateway review.
+
 ## What it guards
 
 - Recursive deletion of broad or protected paths
