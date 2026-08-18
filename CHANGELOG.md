@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.2](https://github.com/tomatoaiu/agent-command-guard/compare/v0.6.1...v0.6.2) (2026-08-18)
+
+
+### Bug Fixes
+
+* protect the agent control surface instead of the whole directory ([#46](https://github.com/tomatoaiu/agent-command-guard/issues/46)) ([c178910](https://github.com/tomatoaiu/agent-command-guard/commit/c178910987af767cdd4ee077bbd7824b20dae82c))
+* read inline interpreter payloads and name the rule in every decision ([#48](https://github.com/tomatoaiu/agent-command-guard/issues/48)) ([5c2699a](https://github.com/tomatoaiu/agent-command-guard/commit/5c2699a84f0d1bef7f19e8737b42fab723888826))
+
 ## [0.6.1](https://github.com/tomatoaiu/agent-command-guard/compare/v0.6.0...v0.6.1) (2026-08-18)
 
 
