@@ -42,6 +42,16 @@ func TestAnalyzeCorpus(t *testing.T) {
 		{"dynamic nested shell", "bash -c \"$COMMAND\"", Review, "dynamic-shell-code"},
 		{"unquoted heredoc substitution", "cat <<EOF\n$(rm -rf /)\nEOF", Block, "recursive-delete-protected"},
 		{"protected redirection", "> ~/.codex/hooks.json", Block, "protected-redirection"},
+		// ~/.claude mixes the control surface with the agent's runtime area, so
+		// the two are judged separately rather than by the directory they share.
+		{"claude settings redirection", "> ~/.claude/settings.json", Block, "protected-redirection"},
+		{"claude skill redirection", "echo x > ~/.claude/skills/evil/SKILL.md", Block, "protected-redirection"},
+		{"claude instructions redirection", "> ~/.claude/CLAUDE.md", Block, "protected-redirection"},
+		{"user scope state redirection", "> ~/.claude.json", Block, "protected-redirection"},
+		{"claude transcript redirection", "echo x > ~/.claude/projects/p/session.jsonl", Allow, ""},
+		{"claude todo redirection", "echo x > ~/.claude/todos/list.json", Allow, ""},
+		{"claude skill scratch redirection", "echo x > ~/.claude/scratch/deck/notes.json", Allow, ""},
+		{"credential inside the runtime area", "echo x > ~/.claude/projects/p/memory/.env", Block, "protected-redirection"},
 		{"guard config overwrite", "> '" + defaultConfigPathForTest(t) + "'", Block, "protected-redirection"},
 		{"protected tee", "echo x | tee ~/.codex/config.toml", Block, "guard-self-protection"},
 		{"protected sed", "sed -i 's/x/y/' ~/.claude/hooks/guard.sh", Block, "guard-self-protection"},

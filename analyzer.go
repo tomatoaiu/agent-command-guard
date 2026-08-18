@@ -1380,11 +1380,6 @@ func (a *analyzer) protectedPath(path string) bool {
 	protected = append(protected, agentControlRoots(a.home)...)
 	for _, root := range protected {
 		if pathWithin(normalized, root) || pathWithin(resolved, resolvePathSymlinks(root)) {
-			// The agent memory store is written by the agent itself. The secret
-			// basename check below still applies to it.
-			if agentMemoryPath(normalized, a.home) {
-				continue
-			}
 			return true
 		}
 	}

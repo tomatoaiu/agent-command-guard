@@ -42,6 +42,33 @@ func TestLinkedWorktreeCountsAsSameWorkspace(t *testing.T) {
 	}
 }
 
+// ~/.claude holds the agent's runtime area alongside its control surface. The
+// runtime area is written as the agent works and grants an attacker nothing, so
+// it must not be protected just because of where it sits.
+func TestAgentRuntimeAreaIsWritable(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	workspace := t.TempDir()
+	claude := filepath.Join(home, ".claude")
+
+	paths := []string{
+		filepath.Join(claude, "projects", "project", "memory", "note.md"),
+		filepath.Join(claude, "projects", "project", "session.jsonl"),
+		filepath.Join(claude, "projects", "project", "Memory", "note.md"),
+		filepath.Join(claude, "todos", "list.json"),
+		filepath.Join(claude, "scratch", "review-deck", "annotations.json"),
+	}
+	for _, path := range paths {
+		t.Run(filepath.Base(filepath.Dir(path)), func(t *testing.T) {
+			result := AnalyzeFile(FileWrite, path, workspace, Config{})
+			if result.Decision != Allow {
+				t.Fatalf("got %s, want allow; findings=%+v", result.Decision, result.Findings)
+			}
+		})
+	}
+}
+
 func TestAgentMemoryStoreIsWritable(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -59,24 +86,31 @@ func TestAgentMemoryStoreIsWritable(t *testing.T) {
 	}
 }
 
-// Carving the memory store out of the agent control roots must not weaken the
-// checks that surround it.
-func TestAgentMemoryStoreKeepsSurroundingChecks(t *testing.T) {
+// Leaving the runtime area writable must not weaken the control surface beside
+// it, nor the credential checks that apply everywhere.
+func TestAgentControlSurfaceStaysProtected(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	workspace := t.TempDir()
-	projects := filepath.Join(home, ".claude", "projects")
+	claude := filepath.Join(home, ".claude")
 
 	tests := []struct {
 		name string
 		path string
 	}{
-		{"credential file inside the memory store", filepath.Join(projects, "project", "memory", ".env")},
-		{"path outside the memory directory", filepath.Join(projects, "project", "session.jsonl")},
-		{"differently cased directory name", filepath.Join(projects, "project", "Memory", "note.md")},
-		{"skills stay protected", filepath.Join(home, ".claude", "skills", "daily", "SKILL.md")},
-		{"settings stay protected", filepath.Join(home, ".claude", "settings.json")},
+		{"credential file inside the runtime area", filepath.Join(claude, "projects", "project", "memory", ".env")},
+		{"skills", filepath.Join(claude, "skills", "daily", "SKILL.md")},
+		{"settings", filepath.Join(claude, "settings.json")},
+		{"local settings", filepath.Join(claude, "settings.local.json")},
+		{"instructions", filepath.Join(claude, "CLAUDE.md")},
+		{"hooks", filepath.Join(claude, "hooks", "guard.sh")},
+		{"agents", filepath.Join(claude, "agents", "reviewer.md")},
+		{"commands", filepath.Join(claude, "commands", "deploy.md")},
+		{"plugins", filepath.Join(claude, "plugins", "example", "index.js")},
+		{"output styles", filepath.Join(claude, "output-styles", "terse.md")},
+		// Outside ~/.claude, and it defines the MCP servers the agent runs.
+		{"user scope state", filepath.Join(home, ".claude.json")},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

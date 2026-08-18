@@ -44,12 +44,12 @@ func gitCommonDir(dir string) string {
 // outsideWorkspace reports whether a write leaves the session's workspace.
 // Two locations count as inside it even though neither sits under the working
 // directory: a linked worktree of the same repository, and the agent's own
-// memory store, which the agent maintains regardless of where it is running.
+// runtime area, which the agent maintains regardless of where it is running.
 func outsideWorkspace(normalized, resolved string, a *analyzer) bool {
 	if filePathWithin(resolved, resolvePathSymlinks(a.cwd)) {
 		return false
 	}
-	if agentMemoryPath(normalized, a.home) {
+	if agentRuntimePath(normalized, a.home) {
 		return false
 	}
 	return !inSameRepositoryWorktree(normalized, a.cwd)
