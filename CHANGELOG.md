@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.1](https://github.com/tomatoaiu/agent-command-guard/compare/v0.6.0...v0.6.1) (2026-08-18)
+
+
+### Bug Fixes
+
+* apply the protected-target decision regardless of the verb ([#43](https://github.com/tomatoaiu/agent-command-guard/issues/43)) ([72f8153](https://github.com/tomatoaiu/agent-command-guard/commit/72f815378b238685fc85f38c42917b2f3bc2e156))
+* resolve values built from names assigned earlier ([#45](https://github.com/tomatoaiu/agent-command-guard/issues/45)) ([b79be07](https://github.com/tomatoaiu/agent-command-guard/commit/b79be07aae867d41bfb8d70c77ffbd4a08d23471))
+
 ## [0.6.0](https://github.com/tomatoaiu/agent-command-guard/compare/v0.5.3...v0.6.0) (2026-08-18)
 
 
