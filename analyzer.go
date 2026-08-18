@@ -234,7 +234,11 @@ func (a *analyzer) inspectCommand(argv []string, known []bool, depth int) {
 		a.inspectGit(args, argKnown)
 	case "sudo":
 		a.add(Block, "privilege-escalation", command, "")
-	case "osascript", "security", "screencapture", "mkfs", "csrutil", "nvram", "dscl", "networksetup":
+	case "nvram":
+		if !nvramReadsOnly(args, argKnown) {
+			a.add(Block, "sensitive-system-command", command, "")
+		}
+	case "osascript", "security", "screencapture", "mkfs", "csrutil", "dscl", "networksetup":
 		a.add(Block, "sensitive-system-command", command, "")
 	case "shutdown", "reboot", "halt", "poweroff":
 		a.add(Block, "system-shutdown", command, "")
@@ -1484,6 +1488,47 @@ func curlUploadsFile(args []string) bool {
 		}
 	}
 	return false
+}
+
+// nvram is both a reader and a writer of firmware variables, so the command
+// name alone says nothing about intent.
+//
+//	read:  nvram <name> / nvram -p / nvram -x -p
+//	write: nvram <name>=<value> / nvram -d <name> / nvram -c / nvram -f <file>
+//
+// Only the forms that can be proven to read are allowed; anything else,
+// including an argument the analyzer cannot resolve, stays blocked.
+func nvramReadsOnly(args []string, known []bool) bool {
+	for i, arg := range args {
+		if i >= len(known) || !known[i] {
+			return false
+		}
+		if strings.HasPrefix(arg, "-") {
+			if !nvramReadOnlyFlag(arg) {
+				return false
+			}
+			continue
+		}
+		if strings.Contains(arg, "=") {
+			return false
+		}
+	}
+	return true
+}
+
+// -p prints every variable and -x switches the output to XML; neither changes
+// anything. Both are single letters, so a bundle such as -xp is read-only too.
+func nvramReadOnlyFlag(arg string) bool {
+	letters := strings.TrimPrefix(arg, "-")
+	if letters == "" {
+		return false
+	}
+	for _, letter := range letters {
+		if letter != 'p' && letter != 'x' {
+			return false
+		}
+	}
+	return true
 }
 
 func isSigningKey(path string) bool {
