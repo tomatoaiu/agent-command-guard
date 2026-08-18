@@ -5,21 +5,21 @@
 
 ### Bug Fixes
 
-* resolve literal assignments and fixed xargs payloads ([#33](https://github.com/tomatoaiu/agent-command-guard/issues/33)) ([3b90a5b](https://github.com/tomatoaiu/agent-command-guard/commit/3b90a5b265277442ba411a3822d23e3d98e7f7d3))
+* resolve literal assignments and fixed xargs payloads ([#33](https://github.com/tomatoaiu/agent-command-guard/issues/33)) ([8e72ded](https://github.com/tomatoaiu/agent-command-guard/commit/8e72dedb1b29b22c66ef7d84a2d23518b2ff2d0e))
 
 ## [0.5.1](https://github.com/tomatoaiu/agent-command-guard/compare/v0.5.0...v0.5.1) (2026-08-17)
 
 
 ### Bug Fixes
 
-* treat linked worktrees and the memory store as inside the workspace ([#31](https://github.com/tomatoaiu/agent-command-guard/issues/31)) ([a8e3011](https://github.com/tomatoaiu/agent-command-guard/commit/a8e301199031a9f12c98e6f9e03db6ab7d202ea2))
+* treat linked worktrees and the memory store as inside the workspace ([#31](https://github.com/tomatoaiu/agent-command-guard/issues/31)) ([06c9064](https://github.com/tomatoaiu/agent-command-guard/commit/06c90647a6dbee3e0207010e6ecf7e9dd0d89d99))
 
 ## [0.5.0](https://github.com/tomatoaiu/agent-command-guard/compare/v0.4.0...v0.5.0) (2026-08-17)
 
 
 ### Features
 
-* add scoped suppression for built-in findings ([#29](https://github.com/tomatoaiu/agent-command-guard/issues/29)) ([179032c](https://github.com/tomatoaiu/agent-command-guard/commit/179032c8d64c0cbcab0b64de6530d3db0dd9219f))
+* add scoped suppression for built-in findings ([#29](https://github.com/tomatoaiu/agent-command-guard/issues/29)) ([ccc45d5](https://github.com/tomatoaiu/agent-command-guard/commit/ccc45d5f9f07258253b16c7c25dbf1301c7e3378))
 
 ## [0.4.0](https://github.com/tomatoaiu/agent-command-guard/compare/v0.3.0...v0.4.0) (2026-08-15)
 
