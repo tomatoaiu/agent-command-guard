@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.3](https://github.com/tomatoaiu/agent-command-guard/compare/v0.5.2...v0.5.3) (2026-08-18)
+
+
+### Bug Fixes
+
+* allow read-only nvram invocations and block only writes ([#35](https://github.com/tomatoaiu/agent-command-guard/issues/35)) ([368b45d](https://github.com/tomatoaiu/agent-command-guard/commit/368b45da5b0a23cab6242d122c13c4840a7865d6))
+
 ## [0.5.2](https://github.com/tomatoaiu/agent-command-guard/compare/v0.5.1...v0.5.2) (2026-08-18)
 
 
