@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.6.0](https://github.com/tomatoaiu/agent-command-guard/compare/v0.5.3...v0.6.0) (2026-08-18)
+
+
+### Features
+
+* guard package publication, repository teardown, and data exposure ([#42](https://github.com/tomatoaiu/agent-command-guard/issues/42)) ([3d8da7d](https://github.com/tomatoaiu/agent-command-guard/commit/3d8da7d6c37fe678bac3cf6e92740163973e32ea))
+* guard privilege escalation, storage destruction, and service changes ([#41](https://github.com/tomatoaiu/agent-command-guard/issues/41)) ([c2e8297](https://github.com/tomatoaiu/agent-command-guard/commit/c2e82971eb7795f0bb213d7e726946d6069111ae))
+
+
+### Bug Fixes
+
+* judge chmod, csrutil, dscl, and networksetup by their arguments ([#39](https://github.com/tomatoaiu/agent-command-guard/issues/39)) ([d38e4ca](https://github.com/tomatoaiu/agent-command-guard/commit/d38e4ca089679001d9f17487fdd74df86ca7d472))
+
 ## [0.5.3](https://github.com/tomatoaiu/agent-command-guard/compare/v0.5.2...v0.5.3) (2026-08-18)
 
 
