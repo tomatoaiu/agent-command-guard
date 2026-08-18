@@ -285,7 +285,11 @@ func (a *analyzer) inspectCommand(argv []string, known []bool, depth int) {
 		a.add(Review, "indirect-execution-gateway", command, "")
 	}
 	if command == "find" && containsAny(args, "-delete") {
-		a.add(Review, "find-delete", command, "")
+		if target, ok := a.findDeletesDangerousRoot(args, argKnown); ok {
+			a.add(Block, "recursive-delete-protected", command, target)
+		} else {
+			a.add(Review, "find-delete", command, "")
+		}
 	}
 	// mkfs and newfs come in one variant per filesystem, so they are matched
 	// by prefix rather than named in the switch below.
@@ -391,30 +395,44 @@ func (a *analyzer) inspectCommand(argv []string, known []bool, depth int) {
 		}
 	case "scp", "sftp":
 		if command == "sftp" || anyRemotePath(args) {
-			a.add(Review, "remote-file-transfer", command, "")
+			if !a.inspectTransferSources(command, args, argKnown) {
+				a.add(Review, "remote-file-transfer", command, "")
+			}
 		}
 	case "rsync":
 		if anyRemotePath(args) {
-			a.add(Review, "remote-file-transfer", command, "")
+			if !a.inspectTransferSources(command, args, argKnown) {
+				a.add(Review, "remote-file-transfer", command, "")
+			}
 		}
 	case "rclone":
 		if transferSubcommand(args) && anyRemotePath(args) {
-			a.add(Review, "remote-file-transfer", command, "")
+			if !a.inspectTransferSources(command, args, argKnown) {
+				a.add(Review, "remote-file-transfer", command, "")
+			}
 		}
 	case "aws":
 		if cloudStorageTransfer(args, "s3") {
-			a.add(Review, "cloud-storage-transfer", command, "")
+			if !a.inspectTransferSources(command, args, argKnown) {
+				a.add(Review, "cloud-storage-transfer", command, "")
+			}
 		}
 	case "gsutil":
 		if containsAny(args, "cp", "mv", "rsync") {
-			a.add(Review, "cloud-storage-transfer", command, "")
+			if !a.inspectTransferSources(command, args, argKnown) {
+				a.add(Review, "cloud-storage-transfer", command, "")
+			}
 		}
 	case "az":
 		if len(args) >= 3 && args[0] == "storage" && (args[1] == "blob" || args[1] == "file") && containsAny(args[2:], "upload", "upload-batch", "sync") {
-			a.add(Review, "cloud-storage-transfer", command, "")
+			if !a.inspectTransferSources(command, args, argKnown) {
+				a.add(Review, "cloud-storage-transfer", command, "")
+			}
 		}
 	case "tar", "zip", "7z", "7zz", "ditto", "cpio":
-		if archiveContainsProtectedPath(args, argKnown, a) {
+		if target, ok := a.archiveSensitiveTarget(args, argKnown); ok {
+			a.add(Block, "credential-archive", command, target)
+		} else if archiveContainsProtectedPath(args, argKnown, a) {
 			a.add(Review, "sensitive-archive", command, "")
 		}
 	case "docker", "podman":
