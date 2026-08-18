@@ -88,6 +88,47 @@ func TestAnalyzeCorpus(t *testing.T) {
 		{"aws s3 copy", "aws s3 cp artifact.zip s3://bucket/", Review, "cloud-storage-transfer"},
 		{"azure blob upload", "az storage blob upload --file artifact.zip", Review, "cloud-storage-transfer"},
 		{"netcat", "nc example.com 1234", Block, "raw-network-channel"},
+		// Privilege escalation is not sudo-only.
+		{"doas escalation", "doas rm -rf /etc", Block, "privilege-escalation"},
+		{"pkexec escalation", "pkexec /bin/sh", Block, "privilege-escalation"},
+		{"su escalation", "su - root", Block, "privilege-escalation"},
+		// Storage destruction.
+		{"mkfs", "mkfs /dev/disk2", Block, "destructive-storage-command"},
+		{"mkfs variant", "mkfs.ext4 /dev/sdb1", Block, "destructive-storage-command"},
+		{"newfs variant", "newfs_hfs /dev/disk2s1", Block, "destructive-storage-command"},
+		{"wipefs", "wipefs -a /dev/sdb", Block, "destructive-storage-command"},
+		{"diskutil erase", "diskutil eraseDisk JHFS+ Untitled disk2", Block, "destructive-storage-command"},
+		{"diskutil erase lowercase", "diskutil erasedisk JHFS+ Untitled disk2", Block, "destructive-storage-command"},
+		{"diskutil partition", "diskutil partitionDisk disk2 1 GPT JHFS+ Name 100%", Block, "destructive-storage-command"},
+		{"diskutil apfs delete", "diskutil apfs deleteContainer disk2", Block, "destructive-storage-command"},
+		{"diskutil list", "diskutil list", Allow, ""},
+		{"diskutil info", "diskutil info disk2", Allow, ""},
+		{"hdiutil erase", "hdiutil erase -type UDIF image.dmg", Block, "destructive-storage-command"},
+		{"hdiutil attach", "hdiutil attach image.dmg", Allow, ""},
+		// Redirection at a block device.
+		{"device redirection", "echo x > /dev/disk2", Block, "device-write"},
+		{"device redirection linux", "cat payload > /dev/sda", Block, "device-write"},
+		{"null redirection", "echo x > /dev/null", Allow, ""},
+		{"stdout redirection", "echo x > /dev/stdout", Allow, ""},
+		{"fd redirection", "echo x > /dev/fd/3", Allow, ""},
+		// Fork bomb.
+		{"fork bomb", ":(){ :|:& };:", Block, "fork-bomb"},
+		// Shutdown paths beyond the bare commands.
+		{"systemctl poweroff", "systemctl poweroff", Block, "system-shutdown"},
+		{"systemctl status", "systemctl status nginx", Allow, ""},
+		{"launchctl reboot", "launchctl reboot userspace", Block, "system-shutdown"},
+		// Scheduled jobs and tool-managed state.
+		{"crontab wipe", "crontab -r", Block, "scheduled-job-wipe"},
+		{"crontab list", "crontab -l", Allow, ""},
+		{"chezmoi destroy", "chezmoi destroy ~/.zshrc", Block, "managed-state-destroy"},
+		{"chezmoi purge", "chezmoi purge", Block, "managed-state-destroy"},
+		{"chezmoi apply", "chezmoi apply", Allow, ""},
+		{"mise implode", "mise implode", Block, "managed-state-destroy"},
+		{"mise install", "mise install", Allow, ""},
+		{"defaults delete", "defaults delete com.apple.dock", Review, "system-preferences-delete"},
+		{"defaults read", "defaults read com.apple.dock", Allow, ""},
+		{"launchctl unload", "launchctl unload ~/Library/LaunchAgents/example.plist", Review, "launch-service-change"},
+		{"launchctl list", "launchctl list", Allow, ""},
 		// nvram reads and nvram writes share one command name, so only the
 		// provably read-only forms are allowed through.
 		{"nvram read variable", "nvram StartupMute", Allow, ""},
