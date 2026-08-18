@@ -156,10 +156,7 @@ func sensitiveWriteBlocked(normalized, resolved string, a *analyzer) bool {
 			return true
 		}
 		for _, root := range protectedFileWriteRoots(a) {
-			// The agent memory store lives under an agent control root but is
-			// written by the agent itself, so it is exempt here. The credential,
-			// key, and persistence checks above still apply to it.
-			if pathMatchesRoot(path, root) && !agentMemoryPath(path, a.home) {
+			if pathMatchesRoot(path, root) {
 				return true
 			}
 		}
