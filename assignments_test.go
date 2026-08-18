@@ -2,6 +2,7 @@ package main
 
 import (
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -43,6 +44,33 @@ func TestLiteralAssignmentIsResolved(t *testing.T) {
 			"R=" + repository + "; git -C $R push origin main",
 			Block, "protected-branch-push",
 		},
+		{
+			"value built from an earlier name",
+			"S=" + filepath.Dir(repository) + `; R="$S/` + filepath.Base(repository) + `"; git -C $R add -A`,
+			Allow, "",
+		},
+		{
+			"protected push through a derived name",
+			"S=" + filepath.Dir(repository) + `; R="$S/` + filepath.Base(repository) + `"; git -C $R push origin main`,
+			Block, "protected-branch-push",
+		},
+		{
+			"chain of three names",
+			"A=" + filepath.Dir(repository) + "; B=$A; R=$B/" + filepath.Base(repository) + "; git -C $R add -A",
+			Allow, "",
+		},
+		// evalWord resolves $HOME directly, so a value derived from it has to
+		// resolve the same way or the two disagree about the same path.
+		{
+			"home through a name",
+			`H=$HOME; rm -rf "$H"`,
+			Block, "recursive-delete-protected",
+		},
+		{
+			"path below home through a name",
+			`H=$HOME; rm -rf "$H/.ssh"`,
+			Block, "recursive-delete-protected",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -57,6 +85,19 @@ func TestLiteralAssignmentIsResolved(t *testing.T) {
 	}
 }
 
+// Resolving a name derived from $HOME must not turn every path below the home
+// directory into a protected target. Windows already treats them all that way,
+// so the distinction only exists on POSIX.
+func TestOrdinaryPathBelowHomeStaysAllowed(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("every path below home is a protected delete target on Windows")
+	}
+	result := analyzePOSIX(`H=$HOME; rm -rf "$H/scratch/build"`, t.TempDir())
+	if result.Decision != Allow {
+		t.Fatalf("got %s, want allow; findings=%+v", result.Decision, result.Findings)
+	}
+}
+
 // Anything that leaves the value uncertain keeps the previous behaviour.
 func TestUncertainAssignmentStaysDynamic(t *testing.T) {
 	repository := committedRepository(t, "main")
@@ -67,8 +108,10 @@ func TestUncertainAssignmentStaysDynamic(t *testing.T) {
 		command string
 	}{
 		{"command substitution", "R=$(pwd); git -C $R push origin main"},
-		{"assignment from another variable", "S=" + repository + "; R=$S; git -C $R push origin main"},
+		{"value from a name assigned later", "R=$S; S=" + repository + "; git -C $R push origin main"},
+		{"value from a name that is itself uncertain", "S=$(pwd); R=$S; git -C $R push origin main"},
 		{"conflicting assignments", "R=/tmp; R=" + repository + "; git -C $R push origin main"},
+		{"value from a conflicting name", "S=/tmp; S=" + repository + "; R=$S; git -C $R push origin main"},
 		{"append assignment", "R=" + repository + "; R+=/nested; git -C $R push origin main"},
 		{"glob in the value", "R=" + filepath.Join(repository, "*") + "; git -C $R push origin main"},
 		{"never assigned", "git -C $UNSET_REPOSITORY push origin main"},
