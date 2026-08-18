@@ -5,6 +5,16 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      ignore_baseline:
+        description: >-
+          Prepare a release even though the manifest version has no published
+          release. Only for a release that was deleted after publication: an
+          immutable release retires its tag name for good, so the baseline can
+          never be satisfied again and every later release stays blocked.
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: prepare-release
@@ -35,6 +45,7 @@ jobs:
         env:
           GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
+          IGNORE_BASELINE: ${{ inputs.ignore_baseline }}
         run: |
           set -euo pipefail
 
@@ -44,7 +55,13 @@ jobs:
             exit 1
           fi
 
-          if gh release view "v${version}" >/dev/null 2>&1; then
+          # Empty on push, so the override is reachable only from a manual
+          # dispatch, and the job already restricts that to the repository
+          # owner.
+          if [[ "$IGNORE_BASELINE" == "true" ]]; then
+            echo "Baseline overridden manually; v${version} is gone for good."
+            ready=true
+          elif gh release view "v${version}" >/dev/null 2>&1; then
             ready=true
           else
             release_count=$(gh api \
