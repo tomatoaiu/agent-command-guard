@@ -111,6 +111,10 @@ func (a *analyzer) analyzePOSIXSource(source string, depth int) {
 			a.inspectPOSIXCall(node, depth)
 		case *syntax.Redirect:
 			a.inspectRedirect(node)
+		case *syntax.FuncDecl:
+			if forkBombDeclaration(node.Name.Value) {
+				a.add(Block, "fork-bomb", node.Name.Value, "")
+			}
 		case *syntax.BinaryCmd:
 			if node.Op == syntax.Pipe || node.Op == syntax.PipeAll {
 				a.inspectPipeline(node)
@@ -220,6 +224,11 @@ func (a *analyzer) inspectCommand(argv []string, known []bool, depth int) {
 	if command == "find" && containsAny(args, "-delete") {
 		a.add(Review, "find-delete", command, "")
 	}
+	// mkfs and newfs come in one variant per filesystem, so they are matched
+	// by prefix rather than named in the switch below.
+	if destroysStorage(command) {
+		a.add(Block, "destructive-storage-command", command, "")
+	}
 
 	switch command {
 	case "rm":
@@ -232,7 +241,7 @@ func (a *analyzer) inspectCommand(argv []string, known []bool, depth int) {
 		}
 	case "git":
 		a.inspectGit(args, argKnown)
-	case "sudo":
+	case "sudo", "doas", "pkexec", "su":
 		a.add(Block, "privilege-escalation", command, "")
 	case "nvram":
 		if !nvramReadsOnly(args, argKnown) {
@@ -250,8 +259,44 @@ func (a *analyzer) inspectCommand(argv []string, known []bool, depth int) {
 		if !networksetupReadsOnly(args, argKnown) {
 			a.add(Block, "sensitive-system-command", command, "")
 		}
-	case "osascript", "security", "screencapture", "mkfs":
+	case "osascript", "security", "screencapture":
 		a.add(Block, "sensitive-system-command", command, "")
+	case "diskutil":
+		if diskutilDestroys(args, argKnown) {
+			a.add(Block, "destructive-storage-command", command, "")
+		}
+	case "hdiutil":
+		if firstSubcommand(args) == "erase" {
+			a.add(Block, "destructive-storage-command", command, "")
+		}
+	case "crontab":
+		if containsAny(args, "-r") {
+			a.add(Block, "scheduled-job-wipe", command, "")
+		}
+	case "chezmoi":
+		if sub := firstSubcommand(args); sub == "destroy" || sub == "purge" {
+			a.add(Block, "managed-state-destroy", command, "")
+		}
+	case "mise":
+		if firstSubcommand(args) == "implode" {
+			a.add(Block, "managed-state-destroy", command, "")
+		}
+	case "defaults":
+		if firstSubcommand(args) == "delete" {
+			a.add(Review, "system-preferences-delete", command, "")
+		}
+	case "launchctl":
+		switch firstSubcommand(args) {
+		case "reboot":
+			a.add(Block, "system-shutdown", command, "")
+		case "load", "unload", "bootstrap", "bootout", "remove", "enable", "disable":
+			a.add(Review, "launch-service-change", command, "")
+		}
+	case "systemctl":
+		switch firstSubcommand(args) {
+		case "poweroff", "reboot", "halt", "kexec":
+			a.add(Block, "system-shutdown", command, "")
+		}
 	case "shutdown", "reboot", "halt", "poweroff":
 		a.add(Block, "system-shutdown", command, "")
 	case "dd":
@@ -1090,7 +1135,14 @@ func (a *analyzer) inspectRedirect(redir *syntax.Redirect) {
 		return
 	}
 	word := evalWord(redir.Word, a.home, a.assignments)
-	if word.Known && a.protectedPath(word.Value) {
+	if !word.Known {
+		return
+	}
+	if isDevicePath(word.Value) {
+		a.add(Block, "device-write", "redirect", word.Value)
+		return
+	}
+	if a.protectedPath(word.Value) {
 		a.add(Block, "protected-redirection", "redirect", a.normalizePath(word.Value))
 	}
 }
