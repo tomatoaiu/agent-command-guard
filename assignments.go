@@ -15,12 +15,29 @@ import (
 // repository could not be identified, and `R=/repo; git -C $R add -A` is an
 // ordinary command that would otherwise be reviewed for the same reason.
 //
-// A name is dropped when anything makes its value uncertain: a non-literal
-// right-hand side, an append or indexed assignment, or two assignments in the
-// same input that disagree. Dropping a name restores the previous behaviour for
-// it, so an unresolved name is still reported as dynamic.
-func literalAssignments(file *syntax.File) map[string]string {
+// A value may be built from names assigned earlier in the same input, which is
+// how scripts usually name a directory once and derive paths from it:
+//
+//	SCRATCH=/tmp/work; TMP="$SCRATCH/merged"; rm -rf "$TMP"
+//
+// Assignments are therefore read in source order, and each one may use the
+// names resolved before it. Only earlier names count: a value that reads a name
+// assigned further down would be empty at the moment it runs, so resolving it
+// from the later assignment would describe a command that never happens.
+//
+// A name is dropped when anything makes its value uncertain: a right-hand side
+// that cannot be resolved from the source and the names before it, an append or
+// indexed assignment, or two assignments in the same input that disagree.
+// Dropping a name restores the previous behaviour for it, so an unresolved name
+// is still reported as dynamic.
+func literalAssignments(file *syntax.File, home string) map[string]string {
 	values := make(map[string]string)
+	// evalWord resolves $HOME on its own, so seeding it here is what makes a
+	// value derived from it resolve the same way. Without this, "rm -rf $HOME"
+	// is blocked while "H=$HOME; rm -rf $H" is not.
+	if home != "" {
+		values["HOME"] = home
+	}
 	ambiguous := make(map[string]bool)
 	syntax.Walk(file, func(node syntax.Node) bool {
 		assign, ok := node.(*syntax.Assign)
@@ -28,17 +45,29 @@ func literalAssignments(file *syntax.File) map[string]string {
 			return true
 		}
 		name := assign.Name.Value
+		// A name that has become uncertain is withdrawn immediately rather
+		// than at the end, so that a later value cannot be built from it. The
+		// walk follows source order, not control flow, so two assignments in
+		// different branches look like a straight-line reassignment; keeping
+		// the first value available would describe one branch as if it were
+		// the only one.
 		if assign.Append || assign.Index != nil || assign.Array != nil || assign.Naked {
 			ambiguous[name] = true
+			delete(values, name)
 			return true
 		}
-		value, ok := literalWordValue(assign.Value)
+		value, ok := resolvedWordValue(assign.Value, values)
 		if !ok {
 			ambiguous[name] = true
+			delete(values, name)
+			return true
+		}
+		if ambiguous[name] {
 			return true
 		}
 		if previous, seen := values[name]; seen && previous != value {
 			ambiguous[name] = true
+			delete(values, name)
 			return true
 		}
 		values[name] = value
@@ -53,10 +82,10 @@ func literalAssignments(file *syntax.File) map[string]string {
 	return values
 }
 
-// literalWordValue returns the text of a word that carries no expansion. A glob
-// character is rejected because the shell decides its value from the filesystem
-// rather than from the source.
-func literalWordValue(word *syntax.Word) (string, bool) {
+// resolvedWordValue returns the text of a word that carries no expansion beyond
+// the names already resolved. A glob character is rejected because the shell
+// decides its value from the filesystem rather than from the source.
+func resolvedWordValue(word *syntax.Word, values map[string]string) (string, bool) {
 	if word == nil {
 		return "", false
 	}
@@ -72,12 +101,25 @@ func literalWordValue(word *syntax.Word) (string, bool) {
 			builder.WriteString(part.Value)
 		case *syntax.DblQuoted:
 			for _, nested := range part.Parts {
-				literal, ok := nested.(*syntax.Lit)
-				if !ok {
+				switch nested := nested.(type) {
+				case *syntax.Lit:
+					builder.WriteString(nested.Value)
+				case *syntax.ParamExp:
+					value, ok := assignedValue(nested, values)
+					if !ok {
+						return "", false
+					}
+					builder.WriteString(value)
+				default:
 					return "", false
 				}
-				builder.WriteString(literal.Value)
 			}
+		case *syntax.ParamExp:
+			value, ok := assignedValue(part, values)
+			if !ok {
+				return "", false
+			}
+			builder.WriteString(value)
 		default:
 			return "", false
 		}

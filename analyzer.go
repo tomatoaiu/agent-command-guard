@@ -103,7 +103,7 @@ func (a *analyzer) analyzePOSIXSource(source string, depth int) {
 	// not inherit them, which keeps an unresolved name dynamic rather than
 	// resolving it from an unrelated scope.
 	previousAssignments := a.assignments
-	a.assignments = literalAssignments(file)
+	a.assignments = literalAssignments(file, a.home)
 	defer func() { a.assignments = previousAssignments }()
 	syntax.Walk(file, func(node syntax.Node) bool {
 		switch node := node.(type) {
