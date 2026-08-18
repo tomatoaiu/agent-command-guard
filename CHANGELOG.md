@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.2](https://github.com/tomatoaiu/agent-command-guard/compare/v0.5.1...v0.5.2) (2026-08-18)
+
+
+### Bug Fixes
+
+* リテラル変数代入とxargs payloadを静的解決して判定精度を上げる ([#33](https://github.com/tomatoaiu/agent-command-guard/issues/33)) ([3b90a5b](https://github.com/tomatoaiu/agent-command-guard/commit/3b90a5b265277442ba411a3822d23e3d98e7f7d3))
+
 ## [0.5.1](https://github.com/tomatoaiu/agent-command-guard/compare/v0.5.0...v0.5.1) (2026-08-17)
 
 
