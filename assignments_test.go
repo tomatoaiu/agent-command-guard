@@ -2,6 +2,7 @@ package main
 
 import (
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -70,11 +71,6 @@ func TestLiteralAssignmentIsResolved(t *testing.T) {
 			`H=$HOME; rm -rf "$H/.ssh"`,
 			Block, "recursive-delete-protected",
 		},
-		{
-			"ordinary path below home through a name",
-			`H=$HOME; rm -rf "$H/scratch/build"`,
-			Allow, "",
-		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -86,6 +82,19 @@ func TestLiteralAssignmentIsResolved(t *testing.T) {
 				t.Fatalf("missing %q; findings=%+v", test.rule, result.Findings)
 			}
 		})
+	}
+}
+
+// Resolving a name derived from $HOME must not turn every path below the home
+// directory into a protected target. Windows already treats them all that way,
+// so the distinction only exists on POSIX.
+func TestOrdinaryPathBelowHomeStaysAllowed(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("every path below home is a protected delete target on Windows")
+	}
+	result := analyzePOSIX(`H=$HOME; rm -rf "$H/scratch/build"`, t.TempDir())
+	if result.Decision != Allow {
+		t.Fatalf("got %s, want allow; findings=%+v", result.Decision, result.Findings)
 	}
 }
 
