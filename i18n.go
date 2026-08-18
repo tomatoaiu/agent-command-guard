@@ -71,6 +71,7 @@ var findingMessages = map[string]translations{
 	"sensitive-input-redirection":    {"Reading a sensitive file through input redirection was blocked.", "redirectionによる機密ファイル読み取りをブロックしました。"},
 	"protected-redirection":          {"Redirection to an agent configuration or sensitive path was blocked.", "agent設定または機密パスへのredirectionをブロックしました。"},
 	"inline-interpreter-code":        {"Inline code execution with {command} requires review.", "{command}によるインラインコード実行は確認が必要です。"},
+	"protected-interpreter-payload":  {"Inline {command} code naming an agent configuration or sensitive path was blocked.", "agent設定または機密パスを指定した{command}のインラインコードをブロックしました。"},
 	"indirect-execution-gateway":     {"Indirect command execution through {command} requires review.", "{command}を介した間接的なコマンド実行は確認が必要です。"},
 	"decoded-to-shell":               {"Decoded content piped directly into a shell was blocked.", "復号・展開した内容のshellへの直接実行をブロックしました。"},
 	"remote-file-transfer":           {"Remote file transfer with {command} requires review.", "{command}によるremoteファイル転送は確認が必要です。"},
@@ -123,4 +124,17 @@ func targetMessage(language, target string) string {
 		return " 対象: " + target
 	}
 	return " Target: " + target
+}
+
+// The rule identifier is what makes a decision findable — in the corpus, in the
+// source, and in a report. Without it the reader has only prose describing the
+// outcome, and has to search the policy to learn which rule produced it.
+func ruleReference(language, ruleID string) string {
+	if ruleID == "" {
+		return ""
+	}
+	if language == "ja" {
+		return " [ルール: " + ruleID + "]"
+	}
+	return " [rule: " + ruleID + "]"
 }

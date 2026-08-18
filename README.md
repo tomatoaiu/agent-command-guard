@@ -375,6 +375,14 @@ With the entry above:
 | `python3 -c "..." && sudo rm -rf /etc` | still blocked on `sudo` |
 | `python3 -c "..." ; sudo rm -rf /etc` | still blocked on `sudo` |
 | `ruby -e "..."` | unchanged, because `ruby` is not listed |
+| `python3 -c "open('~/.claude/settings.json','w')"` | still blocked |
+
+That last row is the reason inline code is read even when the review is
+suppressed. The guard cannot parse a Python or JavaScript program, so a write it
+performs is invisible; without reading the payload, suppressing this one review
+would have been a way past every path protection in the policy. A payload naming
+a protected or credential path is refused as `protected-interpreter-payload`,
+which is a block and therefore not suppressible.
 
 Only findings that are context dependent enough to be a false positive in a
 trusted workspace can be suppressed. `inline-interpreter-code` is currently the

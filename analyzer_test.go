@@ -262,6 +262,20 @@ func TestAnalyzeCorpus(t *testing.T) {
 		{"node inline", "node --eval 'console.log(1)'", Review, "inline-interpreter-code"},
 		{"deno eval", "deno eval 'console.log(1)'", Review, "inline-interpreter-code"},
 		{"normal python script", "python3 scripts/check.py", Allow, ""},
+		// A protected path is refused whichever way the write is expressed. The
+		// redirection form was blocked while the interpreter form was not, which
+		// left every path protection resting on the agent choosing the plain
+		// form.
+		{"python writes agent settings", `python3 -c "open('~/.claude/settings.json','w').write('x')"`, Block, "protected-interpreter-payload"},
+		{"python writes a hook", `python3 -c "open('~/.claude/hooks/guard.sh','w')"`, Block, "protected-interpreter-payload"},
+		{"node writes agent settings", `node -e "require('fs').writeFileSync('~/.claude/settings.json','')"`, Block, "protected-interpreter-payload"},
+		{"python reads a private key", `python3 -c "print(open('~/.ssh/id_ed25519').read())"`, Block, "protected-interpreter-payload"},
+		{"ruby writes codex config", `ruby -e "File.write('~/.codex/config.toml','')"`, Block, "protected-interpreter-payload"},
+		{"deno eval writes agent settings", `deno eval "Deno.writeTextFileSync('~/.claude/settings.json','')"`, Block, "protected-interpreter-payload"},
+		{"python writes the runtime area", `python3 -c "open('~/.claude/projects/p/notes.json','w')"`, Review, "inline-interpreter-code"},
+		{"python writes a workspace file", `python3 -c "open('./out.json','w')"`, Review, "inline-interpreter-code"},
+		{"python fetches a url", `python3 -c "urlopen('https://example.com/a/b')"`, Review, "inline-interpreter-code"},
+		{"python payload built at runtime", `python3 -c "$PAYLOAD"`, Review, "inline-interpreter-code"},
 		// A fixed xargs payload is analyzed rather than stopped at the gateway,
 		// so an ordinary payload is allowed and a dangerous one is judged on its
 		// own. See TestXargsPayloadIsAnalyzed for the cases that still review.
@@ -532,7 +546,7 @@ func TestOutputLocalization(t *testing.T) {
 	t.Setenv("HOME", home)
 
 	english := analyzePOSIX("rm -rf /", t.TempDir())
-	if english.Message != "Recursive deletion of a protected target was blocked. Target: /" {
+	if english.Message != "Recursive deletion of a protected target was blocked. Target: / [rule: recursive-delete-protected]" {
 		t.Fatalf("default English message: %q", english.Message)
 	}
 
@@ -541,7 +555,7 @@ func TestOutputLocalization(t *testing.T) {
 		t.Fatal(err)
 	}
 	japanese := analyzePOSIXWithConfig("rm -rf /", t.TempDir(), japaneseConfig)
-	if japanese.Message != "保護対象への再帰削除をブロックしました。 対象: /" {
+	if japanese.Message != "保護対象への再帰削除をブロックしました。 対象: / [ルール: recursive-delete-protected]" {
 		t.Fatalf("Japanese message: %q", japanese.Message)
 	}
 

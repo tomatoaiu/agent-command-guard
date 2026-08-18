@@ -272,6 +272,9 @@ func (a *analyzer) inspectCommand(argv []string, known []bool, depth int) {
 		}
 	}
 	if inlineInterpreterCode(command, args) {
+		// Read the payload before raising the review, because the review can be
+		// suppressed and a protected path inside the payload must not be.
+		a.inspectInterpreterPayloads(command, args, argKnown)
 		a.add(Review, "inline-interpreter-code", command, "")
 	}
 	if command == "xargs" && containsExecutionGateway(args) {
@@ -816,27 +819,34 @@ func decoderCommand(command string, args []string) bool {
 	}
 }
 
-func inlineInterpreterCode(command string, args []string) bool {
-	flags := []string(nil)
+var pythonCommandPattern = regexp.MustCompile(`^python[0-9.]*$`)
+
+// The flags that make an interpreter run the next argument as a program.
+// Shared with inlineInterpreterPayloads so that the check and the extraction
+// cannot drift apart.
+func inlineInterpreterEvalFlags(command string) []string {
 	switch {
-	case regexp.MustCompile(`^python[0-9.]*$`).MatchString(command):
-		flags = []string{"-c"}
-	case command == "node":
-		flags = []string{"-e", "--eval", "-p", "--print"}
+	case pythonCommandPattern.MatchString(command):
+		return []string{"-c"}
+	case command == "node" || command == "bun":
+		return []string{"-e", "--eval", "-p", "--print"}
 	case command == "ruby":
-		flags = []string{"-e"}
+		return []string{"-e"}
 	case command == "perl":
-		flags = []string{"-e", "-E"}
+		return []string{"-e", "-E"}
 	case command == "php":
-		flags = []string{"-r"}
+		return []string{"-r"}
 	case command == "lua" || strings.HasPrefix(command, "lua5."):
-		flags = []string{"-e"}
-	case command == "deno" && firstSubcommand(args) == "eval":
-		return true
-	case command == "bun":
-		flags = []string{"-e", "--eval", "-p", "--print"}
+		return []string{"-e"}
 	}
-	return containsAny(args, flags...)
+	return nil
+}
+
+func inlineInterpreterCode(command string, args []string) bool {
+	if command == "deno" && firstSubcommand(args) == "eval" {
+		return true
+	}
+	return containsAny(args, inlineInterpreterEvalFlags(command)...)
 }
 
 func containsExecutionGateway(args []string) bool {
@@ -1259,6 +1269,7 @@ func (a *analyzer) result() Result {
 		if a.findings[0].Target != "" {
 			message += targetMessage(a.language, a.findings[0].Target)
 		}
+		message += ruleReference(a.language, a.findings[0].RuleID)
 	}
 	return Result{Decision: decision, Message: message, Findings: a.findings}
 }
