@@ -115,6 +115,8 @@ func (a *analyzer) analyzePOSIXSource(source string, depth int) {
 			if forkBombDeclaration(node.Name.Value) {
 				a.add(Block, "fork-bomb", node.Name.Value, "")
 			}
+		case *syntax.DeclClause:
+			a.inspectDeclClause(node)
 		case *syntax.BinaryCmd:
 			if node.Op == syntax.Pipe || node.Op == syntax.PipeAll {
 				a.inspectPipeline(node)
@@ -170,7 +172,51 @@ func eligiblePOSIXProtectedGitException(file *syntax.File, depth int, home strin
 	return protectedGitExceptionEligibility{Eligible: true, Reason: protectedGitExceptionEligible}
 }
 
+// "export FOO=bar" is a declaration rather than a call, so it never reaches
+// inspectCommand. "declare", "local", "readonly", and "typeset" parse the same
+// way; only "export" reaches beyond the current shell.
+func (a *analyzer) inspectDeclClause(decl *syntax.DeclClause) {
+	if decl.Variant == nil || decl.Variant.Value != "export" {
+		return
+	}
+	for _, assign := range decl.Args {
+		a.inspectAssign(assign, "export")
+	}
+}
+
+// A prefix assignment ("PATH=/tmp/evil some-command") redirects the command it
+// prefixes just as an export redirects the rest of the session.
+func (a *analyzer) inspectAssign(assign *syntax.Assign, command string) {
+	if assign == nil || assign.Name == nil || assign.Value == nil {
+		return
+	}
+	valueKnown := evalWord(assign.Value, a.home, a.assignments).Known
+	if rule := environmentOverrideRule(assign.Name.Value, valueKnown); rule != "" {
+		a.add(Review, rule, command, "")
+	}
+}
+
+func (a *analyzer) inspectEnvAssignments(args []string, known []bool) {
+	for i, arg := range args {
+		if strings.HasPrefix(arg, "-") {
+			continue
+		}
+		name, _, ok := strings.Cut(arg, "=")
+		if !ok {
+			// The first argument without "=" is the command env runs.
+			return
+		}
+		valueKnown := i < len(known) && known[i]
+		if rule := environmentOverrideRule(name, valueKnown); rule != "" {
+			a.add(Review, rule, "env", "")
+		}
+	}
+}
+
 func (a *analyzer) inspectPOSIXCall(call *syntax.CallExpr, depth int) {
+	for _, assign := range call.Assigns {
+		a.inspectAssign(assign, "assignment")
+	}
 	if len(call.Args) == 0 {
 		return
 	}
@@ -182,10 +228,27 @@ func (a *analyzer) inspectPOSIXCall(call *syntax.CallExpr, depth int) {
 		a.add(Review, "dynamic-command-name", "dynamic", "")
 		return
 	}
+	// Command substitution has to be seen before the arguments are flattened
+	// to strings, because flattening only records that a value was dynamic,
+	// not that it came from running something.
+	if name := normalizeCommandName(words[0].Value); dnsLookupCommand(name) {
+		for _, arg := range call.Args[1:] {
+			if wordHasCommandSubstitution(arg) {
+				a.add(Block, "dns-exfiltration", name, "")
+				break
+			}
+		}
+	}
 	argv := make([]string, len(words))
 	known := make([]bool, len(words))
 	for i, word := range words {
 		argv[i], known[i] = word.Value, word.Known
+	}
+	// env carries its assignments as ordinary arguments, and unwrapCommand
+	// drops them on the way to the wrapped command, so they are read here
+	// while they are still visible.
+	if normalizeCommandName(argv[0]) == "env" {
+		a.inspectEnvAssignments(argv[1:], known[1:])
 	}
 	argv, known = unwrapCommand(argv, known)
 	a.inspectCommand(argv, known, depth)
@@ -228,6 +291,17 @@ func (a *analyzer) inspectCommand(argv []string, known []bool, depth int) {
 	// by prefix rather than named in the switch below.
 	if destroysStorage(command) {
 		a.add(Block, "destructive-storage-command", command, "")
+	}
+	// Publishing and host mounts cut across too many tools to sit in the
+	// switch, where each would need its own case with the same body.
+	if publishesPackage(command, args) {
+		a.add(Block, "package-publish", command, "")
+	}
+	if publishesContainerArtifact(command, args) {
+		a.add(Review, "artifact-publish", command, "")
+	}
+	if containerMountsHost(command, args) {
+		a.add(Review, "container-host-mount", command, "")
 	}
 
 	switch command {
@@ -365,9 +439,13 @@ func (a *analyzer) inspectCommand(argv []string, known []bool, depth int) {
 		if firstSubcommand(args) == "uninstall" || firstSubcommand(args) == "remove" || firstSubcommand(args) == "untap" {
 			a.add(Review, "package-removal", command, "")
 		}
-	case "npm", "pnpm":
-		if firstSubcommand(args) == "publish" {
-			a.add(Block, "package-publish", command, "")
+	case "gh":
+		if ghDestroys(args) {
+			a.add(Block, "repository-administration", command, "")
+		}
+	case "open":
+		if opensRemoteURL(args, argKnown) {
+			a.add(Review, "browser-navigation", command, "")
 		}
 	case "chmod":
 		if chmodGrantsWorldWrite(args, argKnown) {
