@@ -77,6 +77,8 @@ var findingMessages = map[string]translations{
 	"cloud-storage-transfer":         {"Cloud storage transfer with {command} requires review.", "{command}によるcloud storage転送は確認が必要です。"},
 	"find-delete":                    {"Deleting files through find requires review.", "findによるファイル削除は確認が必要です。"},
 	"sensitive-archive":              {"Archiving an agent configuration or sensitive path requires review.", "agent設定または機密パスのアーカイブ作成は確認が必要です。"},
+	"credential-archive":             {"Archiving a credential store was blocked.", "認証情報ストアのアーカイブ作成をブロックしました。"},
+	"sensitive-remote-transfer":      {"Sending a credential to another machine was blocked.", "認証情報の他マシンへの送信をブロックしました。"},
 	"container-prune":                {"Container cleanup may delete images, volumes, or build data.", "コンテナのクリーンアップによりimage、volume、build dataが削除される可能性があります。"},
 	"infrastructure-delete":          {"Infrastructure resource deletion requires review.", "インフラリソースの削除は確認が必要です。"},
 	"invalid-file-path":              {"The file tool path is missing or invalid.", "ファイルツールのパスが未指定または不正です。"},
