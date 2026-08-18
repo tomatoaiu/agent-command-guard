@@ -42,6 +42,7 @@ type analyzer struct {
 	protectedBranchExceptions        []GitProtectedBranchException
 	protectedGitExceptionEligibility protectedGitExceptionEligibility
 	suppressions                     []Suppression
+	assignments                      map[string]string
 	findings                         []Finding
 }
 
@@ -98,6 +99,12 @@ func (a *analyzer) analyzePOSIXSource(source string, depth int) {
 	previousEligibility := a.protectedGitExceptionEligibility
 	a.protectedGitExceptionEligibility = eligiblePOSIXProtectedGitException(file, depth, a.home)
 	defer func() { a.protectedGitExceptionEligibility = previousEligibility }()
+	// Assignments are scoped to the input being parsed. A nested payload does
+	// not inherit them, which keeps an unresolved name dynamic rather than
+	// resolving it from an unrelated scope.
+	previousAssignments := a.assignments
+	a.assignments = literalAssignments(file)
+	defer func() { a.assignments = previousAssignments }()
 	syntax.Walk(file, func(node syntax.Node) bool {
 		switch node := node.(type) {
 		case *syntax.CallExpr:
@@ -139,7 +146,7 @@ func eligiblePOSIXProtectedGitException(file *syntax.File, depth int, home strin
 	if !ok || len(call.Assigns) > 0 || len(call.Args) == 0 {
 		return protectedGitExceptionEligibility{Reason: protectedGitExceptionIndirect}
 	}
-	command := evalWord(call.Args[0], home)
+	command := evalWord(call.Args[0], home, nil)
 	if !command.Known {
 		return protectedGitExceptionEligibility{}
 	}
@@ -165,7 +172,7 @@ func (a *analyzer) inspectPOSIXCall(call *syntax.CallExpr, depth int) {
 	}
 	words := make([]wordValue, 0, len(call.Args))
 	for _, arg := range call.Args {
-		words = append(words, evalWord(arg, a.home))
+		words = append(words, evalWord(arg, a.home, a.assignments))
 	}
 	if !words[0].Known {
 		a.add(Review, "dynamic-command-name", "dynamic", "")
@@ -201,7 +208,11 @@ func (a *analyzer) inspectCommand(argv []string, known []bool, depth int) {
 		a.add(Review, "inline-interpreter-code", command, "")
 	}
 	if command == "xargs" && containsExecutionGateway(args) {
-		a.add(Review, "indirect-execution-gateway", command, "")
+		if payload, ok := gatewayShellPayload(args, argKnown); ok {
+			a.analyzePOSIXSource(payload, depth+1)
+		} else {
+			a.add(Review, "indirect-execution-gateway", command, "")
+		}
 	}
 	if command == "find" && findExecutesGateway(args) {
 		a.add(Review, "indirect-execution-gateway", command, "")
@@ -476,7 +487,7 @@ func SafeTempCleanup(source, cwd string) bool {
 	if !ok || stmt.Negated || stmt.Background || len(stmt.Redirs) != 0 || len(call.Assigns) != 0 || len(call.Args) < 2 {
 		return false
 	}
-	words := literalWords(call.Args, userHomeDir())
+	words := literalWords(call.Args, userHomeDir(), nil)
 	for _, word := range words {
 		if !word.Known {
 			return false
@@ -569,7 +580,7 @@ func statementHasSensitiveSource(stmt *syntax.Stmt, a *analyzer) bool {
 		if !ok || len(call.Args) == 0 {
 			return true
 		}
-		words := literalWords(call.Args, a.home)
+		words := literalWords(call.Args, a.home, a.assignments)
 		if len(words) == 0 {
 			return true
 		}
@@ -612,7 +623,7 @@ func statementHasDecoderSource(stmt *syntax.Stmt) bool {
 		if !ok || len(call.Args) == 0 {
 			return true
 		}
-		words := literalWords(call.Args, userHomeDir())
+		words := literalWords(call.Args, userHomeDir(), nil)
 		if len(words) == 0 || !words[0].Known {
 			return true
 		}
@@ -681,6 +692,52 @@ func containsExecutionGateway(args []string) bool {
 	return false
 }
 
+// gatewayShellPayload returns the shell code xargs would run, when the source
+// text fixes that code. Analyzing it reports what the payload actually does
+// instead of stopping at the gateway, which both clears an ordinary payload and
+// raises a dangerous one to its own decision.
+//
+// An interpreter gateway such as `python3 -c` is not shell code and is left to
+// the existing review. So is a payload holding the replacement string, since
+// xargs substitutes data read at run time into it.
+func gatewayShellPayload(args []string, known []bool) (string, bool) {
+	replacement := xargsReplacement(args)
+	for i, arg := range args {
+		if !isShell(normalizeCommandName(arg)) {
+			continue
+		}
+		rest, restKnown := args[i+1:], known[i+1:]
+		index := shellCodeIndex(rest)
+		if index < 0 || index >= len(restKnown) || !restKnown[index] {
+			return "", false
+		}
+		payload := rest[index]
+		if replacement != "" && strings.Contains(payload, replacement) {
+			return "", false
+		}
+		return payload, true
+	}
+	return "", false
+}
+
+// xargsReplacement returns the token xargs substitutes with each input item, or
+// an empty string when the invocation does not use one.
+func xargsReplacement(args []string) string {
+	for i, arg := range args {
+		switch {
+		case arg == "-I" || arg == "-i" || arg == "--replace":
+			if i+1 < len(args) {
+				return args[i+1]
+			}
+		case strings.HasPrefix(arg, "-I") && len(arg) > 2:
+			return arg[2:]
+		case strings.HasPrefix(arg, "--replace="):
+			return strings.TrimPrefix(arg, "--replace=")
+		}
+	}
+	return ""
+}
+
 func findExecutesGateway(args []string) bool {
 	for i, arg := range args {
 		if (arg == "-exec" || arg == "-execdir" || arg == "-ok" || arg == "-okdir") && i+1 < len(args) {
@@ -702,7 +759,7 @@ func statementHasCommand(stmt *syntax.Stmt, predicate func(string) bool) bool {
 		if !ok || len(call.Args) == 0 {
 			return true
 		}
-		value := evalWord(call.Args[0], userHomeDir())
+		value := evalWord(call.Args[0], userHomeDir(), nil)
 		if value.Known && predicate(normalizeCommandName(value.Value)) {
 			found = true
 			return false
@@ -712,10 +769,10 @@ func statementHasCommand(stmt *syntax.Stmt, predicate func(string) bool) bool {
 	return found
 }
 
-func literalWords(words []*syntax.Word, home string) []wordValue {
+func literalWords(words []*syntax.Word, home string, assignments map[string]string) []wordValue {
 	result := make([]wordValue, 0, len(words))
 	for _, word := range words {
-		result = append(result, evalWord(word, home))
+		result = append(result, evalWord(word, home, assignments))
 	}
 	return result
 }
@@ -1007,7 +1064,7 @@ func (a *analyzer) protectedBranch(branch, gitCWD string) bool {
 func (a *analyzer) inspectRedirect(redir *syntax.Redirect) {
 	switch redir.Op {
 	case syntax.RdrIn, syntax.RdrInOut:
-		word := evalWord(redir.Word, a.home)
+		word := evalWord(redir.Word, a.home, a.assignments)
 		if word.Known && a.sensitiveReadPath(word.Value) {
 			a.add(Block, "sensitive-input-redirection", "redirect", a.normalizePath(word.Value))
 		}
@@ -1016,7 +1073,7 @@ func (a *analyzer) inspectRedirect(redir *syntax.Redirect) {
 	default:
 		return
 	}
-	word := evalWord(redir.Word, a.home)
+	word := evalWord(redir.Word, a.home, a.assignments)
 	if word.Known && a.protectedPath(word.Value) {
 		a.add(Block, "protected-redirection", "redirect", a.normalizePath(word.Value))
 	}
@@ -1067,8 +1124,14 @@ type wordValue struct {
 	Known bool
 }
 
-func evalWord(word *syntax.Word, home string) wordValue {
+func evalWord(word *syntax.Word, home string, assignments map[string]string) wordValue {
 	var builder strings.Builder
+	expand := func(expansion *syntax.ParamExp) (string, bool) {
+		if expansion.Param != nil && expansion.Param.Value == "HOME" && !expansion.Excl && expansion.Exp == nil {
+			return home, true
+		}
+		return assignedValue(expansion, assignments)
+	}
 	for _, part := range word.Parts {
 		switch part := part.(type) {
 		case *syntax.Lit:
@@ -1083,21 +1146,21 @@ func evalWord(word *syntax.Word, home string) wordValue {
 				case *syntax.SglQuoted:
 					builder.WriteString(nested.Value)
 				case *syntax.ParamExp:
-					if nested.Param != nil && nested.Param.Value == "HOME" && !nested.Excl && nested.Exp == nil {
-						builder.WriteString(home)
-					} else {
+					value, ok := expand(nested)
+					if !ok {
 						return wordValue{Known: false}
 					}
+					builder.WriteString(value)
 				default:
 					return wordValue{Known: false}
 				}
 			}
 		case *syntax.ParamExp:
-			if part.Param != nil && part.Param.Value == "HOME" && !part.Excl && part.Exp == nil {
-				builder.WriteString(home)
-			} else {
+			value, ok := expand(part)
+			if !ok {
 				return wordValue{Known: false}
 			}
+			builder.WriteString(value)
 		default:
 			return wordValue{Known: false}
 		}

