@@ -67,6 +67,12 @@ func TestAnalyzeCorpus(t *testing.T) {
 		{"git reset hard", "git reset --hard", Block, "git-reset-hard"},
 		{"git global reset hard", "git -C /tmp/repo reset --hard", Block, "git-reset-hard"},
 		{"git clean force", "git clean -fd", Review, "git-clean-force"},
+		// -n removes nothing, so the force flag alongside it describes a run
+		// that never deletes.
+		{"git clean dry run", "git clean -fd -n", Allow, ""},
+		{"git clean dry run bundled", "git clean -fdn", Allow, ""},
+		{"git clean dry run long", "git clean -fd --dry-run", Allow, ""},
+		{"git clean force with long option", "git clean -fd --quiet", Review, "git-clean-force"},
 		{"git force push", "git push --force origin feature", Review, "git-force-push"},
 		{"git plus force push", "git push origin +feature", Review, "git-force-push"},
 		{"feature push", "git push origin feature", Allow, ""},

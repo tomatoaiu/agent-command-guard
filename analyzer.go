@@ -1009,7 +1009,11 @@ func (a *analyzer) inspectGit(args []string, known []bool) {
 			a.add(Block, "git-reset-hard", "git", "")
 		}
 	case "clean":
-		if hasForceFlag(rest) {
+		// -n asks git to list what it would remove and remove nothing, and it
+		// holds even when -f is given alongside it. Reviewing that run asks
+		// about a deletion that never happens, which is the shape of warning
+		// that teaches the reader to approve without reading.
+		if hasForceFlag(rest) && !hasDryRunFlag(rest) {
 			a.add(Review, "git-clean-force", "git", "")
 		}
 	case "stash":
@@ -1672,6 +1676,22 @@ func anyArgPrefix(args []string, prefix string) bool {
 func hasForceFlag(args []string) bool {
 	for _, arg := range args {
 		if arg == "--force" || (strings.HasPrefix(arg, "-") && strings.Contains(strings.TrimPrefix(arg, "-"), "f")) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasDryRunFlag reports the -n / --dry-run form that makes a command describe
+// its work instead of doing it. Only the short bundle is scanned for "n" so
+// that a long option carrying the letter — "--no-verify" and its kin — is not
+// mistaken for it.
+func hasDryRunFlag(args []string) bool {
+	for _, arg := range args {
+		if arg == "--dry-run" {
+			return true
+		}
+		if strings.HasPrefix(arg, "-") && !strings.HasPrefix(arg, "--") && strings.Contains(arg[1:], "n") {
 			return true
 		}
 	}
