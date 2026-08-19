@@ -433,6 +433,47 @@ func TestInitialPushToProtectedBranchIsAllowed(t *testing.T) {
 	}
 }
 
+func TestInitialCommitToProtectedBranchIsAllowed(t *testing.T) {
+	repo := t.TempDir()
+	command := exec.Command("git", "init", "-b", "main", repo)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, output)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	command = exec.Command("git", "-C", repo, "add", "README.md")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git add: %v: %s", err, output)
+	}
+
+	// Nothing is committed yet, so main does not exist and the protection has
+	// no history to defend.
+	for _, source := range []string{`git commit -m "initial"`, `git commit -am "initial"`} {
+		result := analyzeNativeShell(source, repo)
+		if result.Decision != Allow {
+			t.Errorf("%q: got %s, findings=%+v", source, result.Decision, result.Findings)
+		}
+	}
+
+	command = exec.Command("git", "-C", repo, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "initial")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v: %s", err, output)
+	}
+	result := analyzeNativeShell(`git commit -m "second"`, repo)
+	if result.Decision != Block || !hasRule(result, "protected-branch-direct-commit") {
+		t.Errorf("commit after initial commit: got %s, findings=%+v", result.Decision, result.Findings)
+	}
+}
+
+// The exemption keys off an empty history, so a directory that is not a
+// repository at all must not report one.
+func TestNonRepositoryDoesNotReportEmptyHistory(t *testing.T) {
+	if emptyGitHistory(t.TempDir()) {
+		t.Error("a directory that is not a repository reported an empty history")
+	}
+}
+
 func TestGitCWorkingDirectoryBranchDetection(t *testing.T) {
 	root := t.TempDir()
 	mainRepo := filepath.Join(root, "main-repo")
@@ -449,6 +490,12 @@ func TestGitCWorkingDirectoryBranchDetection(t *testing.T) {
 	command := exec.Command("git", "-C", featureRepo, "switch", "-c", "feature/test")
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("git switch: %v: %s", err, output)
+	}
+	// The branch this test wants protected has to exist: an empty history is
+	// exempt so that the first commit can be made at all.
+	command = exec.Command("git", "-C", mainRepo, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "initial")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v: %s", err, output)
 	}
 
 	for _, source := range []string{
