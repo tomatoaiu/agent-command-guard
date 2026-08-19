@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.3](https://github.com/tomatoaiu/agent-command-guard/compare/v0.6.2...v0.6.3) (2026-08-19)
+
+
+### Bug Fixes
+
+* inspect find -exec commands and stop misreading a bare dash ([#49](https://github.com/tomatoaiu/agent-command-guard/issues/49)) ([91ddd33](https://github.com/tomatoaiu/agent-command-guard/commit/91ddd33383584ac99b50b0c6ade13cf76ad99a86))
+
 ## [0.6.2](https://github.com/tomatoaiu/agent-command-guard/compare/v0.6.1...v0.6.2) (2026-08-18)
 
 
