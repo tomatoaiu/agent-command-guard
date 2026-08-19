@@ -40,6 +40,10 @@ func TestProtectedBranchExceptionAllowsOnlyExactMatrixCells(t *testing.T) {
 		{"amend", "git commit --amend --no-edit", repository},
 		{"repository subdirectory", "git commit -m test", subdirectory},
 		{"git C", "git -C " + repository + " commit -m test", t.TempDir()},
+		// "-" is the stdin placeholder for -F and "--" ends the option list;
+		// neither abbreviates --no-verify.
+		{"message from stdin", "git commit -F -", repository},
+		{"pathspec separator", "git commit -m test -- README.md", repository},
 		{"push short ref", "git push origin main", repository},
 		{"push explicit ref", "git push origin main:main", repository},
 		{"push full ref", "git push origin refs/heads/main:refs/heads/main", repository},
@@ -77,6 +81,7 @@ func TestProtectedBranchExceptionAllowsOnlyExactMatrixCells(t *testing.T) {
 		{"delete refspec", "git push origin :main", repository, "protected-remote-branch-delete"},
 		{"no verify", "git commit --no-verify -m test", repository, "protected-branch-direct-commit"},
 		{"short no verify", "git commit -n -m test", repository, "protected-branch-direct-commit"},
+		{"abbreviated no verify", "git commit --no-ver -m test", repository, "protected-branch-direct-commit"},
 		{"dynamic commit argument", `git commit -m "$(printf test)"`, repository, "protected-branch-direct-commit"},
 		{"compound commit and push", "git commit -m test && git push origin main", repository, "protected-branch-exception-compound-command"},
 		{"compound push and status", "git push origin main && git status", repository, "protected-branch-exception-compound-command"},
