@@ -284,14 +284,19 @@ func (a *analyzer) inspectCommand(argv []string, known []bool, depth int) {
 			a.add(Review, "indirect-execution-gateway", command, "")
 		}
 	}
-	if command == "find" && findExecutesGateway(args) {
-		a.add(Review, "indirect-execution-gateway", command, "")
-	}
-	if command == "find" && containsAny(args, "-delete") {
-		if target, ok := a.findDeletesDangerousRoot(args, argKnown); ok {
-			a.add(Block, "recursive-delete-protected", command, target)
-		} else {
-			a.add(Review, "find-delete", command, "")
+	if command == "find" {
+		if findExecutesGateway(args) {
+			a.add(Review, "indirect-execution-gateway", command, "")
+		}
+		for _, nested := range findExecCommands(args, argKnown) {
+			a.inspectCommand(nested.argv, nested.known, depth+1)
+		}
+		if containsAny(args, "-delete") {
+			if target, ok := a.findDeletesDangerousRoot(args, argKnown); ok {
+				a.add(Block, "recursive-delete-protected", command, target)
+			} else {
+				a.add(Review, "find-delete", command, "")
+			}
 		}
 	}
 	// mkfs and newfs come in one variant per filesystem, so they are matched
@@ -913,6 +918,45 @@ func findExecutesGateway(args []string) bool {
 		}
 	}
 	return false
+}
+
+// findExecCommand is one command that find runs itself, recovered from the
+// arguments between an -exec style primary and the ";" or "+" that closes it.
+type findExecCommand struct {
+	argv  []string
+	known []bool
+}
+
+// findExecCommands recovers the commands a find invocation runs, so that each
+// one is inspected like a command written on its own. Without this, "find .
+// -exec rm -rf {} +" passes untouched while the equivalent "find . -delete" is
+// reviewed, even though both delete whatever the traversal reaches.
+//
+// The "{}" placeholder is reported as unknown because find substitutes a path
+// at run time. A recursive deletion built on it therefore lands on the same
+// dynamic-target reporting as "rm -rf $VAR", while a literal path written
+// alongside it stays resolvable and keeps its protected-path checks.
+func findExecCommands(args []string, known []bool) []findExecCommand {
+	commands := make([]findExecCommand, 0)
+	for i := 0; i < len(args); i++ {
+		if args[i] != "-exec" && args[i] != "-execdir" && args[i] != "-ok" && args[i] != "-okdir" {
+			continue
+		}
+		argv := make([]string, 0)
+		argvKnown := make([]bool, 0)
+		for j := i + 1; j < len(args); j++ {
+			i = j
+			if args[j] == ";" || args[j] == "+" {
+				break
+			}
+			argv = append(argv, args[j])
+			argvKnown = append(argvKnown, j < len(known) && known[j] && !strings.Contains(args[j], "{}"))
+		}
+		if len(argv) > 0 {
+			commands = append(commands, findExecCommand{argv: argv, known: argvKnown})
+		}
+	}
+	return commands
 }
 
 func inlineInterpreterName(command string) bool {
