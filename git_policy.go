@@ -203,7 +203,13 @@ func safeProtectedCommitArguments(args []string, known []bool) bool {
 	}
 	for _, arg := range args {
 		option := strings.SplitN(arg, "=", 2)[0]
-		if strings.HasPrefix("--no-verify", option) {
+		// Git accepts unambiguous abbreviations, so "--no-ver" disables the
+		// hooks just as "--no-verify" does. The prefix test therefore has to
+		// run in this direction, but it only describes a long option: a bare
+		// "-" is the stdin placeholder in "commit -F -", and "--" ends the
+		// option list. Neither abbreviates --no-verify, so requiring a leading
+		// "--" plus at least one more character keeps them out.
+		if strings.HasPrefix(option, "--") && len(option) > 2 && strings.HasPrefix("--no-verify", option) {
 			return false
 		}
 		if strings.HasPrefix(arg, "-") && !strings.HasPrefix(arg, "--") && strings.Contains(arg[1:], "n") {
