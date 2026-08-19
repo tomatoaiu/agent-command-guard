@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.4](https://github.com/tomatoaiu/agent-command-guard/compare/v0.6.3...v0.6.4) (2026-08-19)
+
+
+### Bug Fixes
+
+* stop reviewing a git clean that only lists what it would remove ([#51](https://github.com/tomatoaiu/agent-command-guard/issues/51)) ([c169374](https://github.com/tomatoaiu/agent-command-guard/commit/c169374fa0c4f5d491e1cc16913bd256565476aa))
+
 ## [0.6.3](https://github.com/tomatoaiu/agent-command-guard/compare/v0.6.2...v0.6.3) (2026-08-19)
 
 
