@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/tomatoaiu/agent-command-guard/compare/v0.6.4...v0.7.0) (2026-08-23)
+
+
+### Features
+
+* add repository-scoped pull request blocks ([#54](https://github.com/tomatoaiu/agent-command-guard/issues/54)) ([7555fc5](https://github.com/tomatoaiu/agent-command-guard/commit/7555fc5593c82c07a492239b5e2e5bae5bcf6f1a))
+
 ## [0.6.4](https://github.com/tomatoaiu/agent-command-guard/compare/v0.6.3...v0.6.4) (2026-08-19)
 
 
