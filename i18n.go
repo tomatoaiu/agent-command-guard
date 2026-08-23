@@ -90,6 +90,10 @@ var findingMessages = map[string]translations{
 	"shell-profile-write":            {"Writing to a Zsh profile requires review.", "Zshプロファイルへの書き込みは確認が必要です。"},
 	"outside-workspace-write":        {"Writing outside the current workspace requires review.", "現在のworkspace外への書き込みは確認が必要です。"},
 
+	"github-pull-request-create":            {"Pull request creation is blocked for this GitHub repository.", "このGitHubリポジトリではpull requestの作成をブロックしています。"},
+	"github-pull-request-target-unknown":    {"Pull request creation was blocked because the GitHub repository target could not be determined safely.", "対象のGitHubリポジトリを安全に特定できないため、pull requestの作成をブロックしました。"},
+	"github-pull-request-operation-unknown": {"A dynamic or custom GitHub operation was blocked because it could create a pull request.", "pull requestを作成する可能性がある動的またはカスタムのGitHub操作をブロックしました。"},
+
 	"protected-branch-exception-compound-command":    {"The structured protected-branch exception matched, but it does not apply inside a compound command. Run the protected Git operation separately.", "構造化された保護ブランチ例外には一致しましたが、複合コマンド内では適用されません。保護されたGit操作を単独で実行してください。"},
 	"protected-branch-exception-pipeline":            {"The structured protected-branch exception matched, but it does not apply inside a pipeline. Run the protected Git operation separately.", "構造化された保護ブランチ例外には一致しましたが、pipeline内では適用されません。保護されたGit操作を単独で実行してください。"},
 	"protected-branch-exception-redirection":         {"The structured protected-branch exception matched, but it does not apply to an invocation with redirection. Run the protected Git operation separately.", "構造化された保護ブランチ例外には一致しましたが、redirectionを伴う実行には適用されません。保護されたGit操作を単独で実行してください。"},

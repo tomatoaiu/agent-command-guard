@@ -13,6 +13,7 @@ import (
 
 type Config struct {
 	Git          GitConfig     `toml:"git"`
+	GitHub       GitHubConfig  `toml:"github"`
 	Output       OutputConfig  `toml:"output"`
 	Rules        []Rule        `toml:"rules"`
 	FileRules    []FileRule    `toml:"file_rules"`
@@ -90,6 +91,9 @@ func (c *Config) prepare(baseDir string) error {
 		}
 	}
 	if err := prepareGitProtectedBranchExceptions(c.Git.ProtectedBranchExceptions, baseDir); err != nil {
+		return err
+	}
+	if err := prepareGitHubPullRequestCreateBlocks(c.GitHub.PullRequestCreateBlocks); err != nil {
 		return err
 	}
 	seen := make(map[string]bool)
