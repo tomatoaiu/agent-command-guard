@@ -41,6 +41,16 @@ type analyzer struct {
 	protectedBranches                []string
 	protectedBranchExceptions        []GitProtectedBranchException
 	protectedGitExceptionEligibility protectedGitExceptionEligibility
+	githubPullRequestCreateBlocks    []GitHubPullRequestCreateBlock
+	githubRepositoryOverride         *wordValue
+	githubHostOverride               *wordValue
+	githubPossibleCWDs               []string
+	githubCWDUnknown                 bool
+	githubRepositoryContextUnknown   bool
+	githubShellVariables             map[string]wordValue
+	githubExportedVariables          map[string]bool
+	githubAllExport                  bool
+	powerShellGitHubAliases          map[string]bool
 	suppressions                     []Suppression
 	assignments                      map[string]string
 	findings                         []Finding
@@ -68,13 +78,16 @@ func AnalyzeWithConfigAndShell(command, cwd string, config Config, shell ShellDi
 	}
 	shell = shell.resolved()
 	a := &analyzer{
-		cwd:                       cwd,
-		home:                      userHomeDir(),
-		shell:                     shell,
-		language:                  config.Output.Language,
-		protectedBranches:         config.Git.ProtectedBranches,
-		protectedBranchExceptions: config.Git.ProtectedBranchExceptions,
-		suppressions:              config.Suppressions,
+		cwd:                           cwd,
+		home:                          userHomeDir(),
+		shell:                         shell,
+		language:                      config.Output.Language,
+		protectedBranches:             config.Git.ProtectedBranches,
+		protectedBranchExceptions:     config.Git.ProtectedBranchExceptions,
+		githubPullRequestCreateBlocks: config.GitHub.PullRequestCreateBlocks,
+		githubRepositoryOverride:      inheritedGitHubEnvironmentOverride("GH_REPO"),
+		githubHostOverride:            inheritedGitHubEnvironmentOverride("GH_HOST"),
+		suppressions:                  config.Suppressions,
 	}
 	if shell == ShellPowerShell {
 		a.analyzePowerShellSource(command, 0)
@@ -82,6 +95,14 @@ func AnalyzeWithConfigAndShell(command, cwd string, config Config, shell ShellDi
 		a.analyzePOSIXSource(command, 0)
 	}
 	return a.result()
+}
+
+func inheritedGitHubEnvironmentOverride(name string) *wordValue {
+	value, ok := os.LookupEnv(name)
+	if !ok {
+		return nil
+	}
+	return &wordValue{Value: value, Known: true}
 }
 
 func (a *analyzer) analyzePOSIXSource(source string, depth int) {
@@ -99,6 +120,23 @@ func (a *analyzer) analyzePOSIXSource(source string, depth int) {
 	previousEligibility := a.protectedGitExceptionEligibility
 	a.protectedGitExceptionEligibility = eligiblePOSIXProtectedGitException(file, depth, a.home)
 	defer func() { a.protectedGitExceptionEligibility = previousEligibility }()
+	previousRepositoryOverride := a.githubRepositoryOverride
+	previousHostOverride := a.githubHostOverride
+	previousShellVariables := a.githubShellVariables
+	previousExportedVariables := a.githubExportedVariables
+	previousAllExport := a.githubAllExport
+	a.githubShellVariables = cloneGitHubShellVariables(previousShellVariables)
+	a.githubExportedVariables = cloneGitHubExportedVariables(previousExportedVariables)
+	if previousShellVariables == nil {
+		a.seedInheritedGitHubShellEnvironment()
+	}
+	defer func() {
+		a.githubRepositoryOverride = previousRepositoryOverride
+		a.githubHostOverride = previousHostOverride
+		a.githubShellVariables = previousShellVariables
+		a.githubExportedVariables = previousExportedVariables
+		a.githubAllExport = previousAllExport
+	}()
 	// Assignments are scoped to the input being parsed. A nested payload does
 	// not inherit them, which keeps an unresolved name dynamic rather than
 	// resolving it from an unrelated scope.
@@ -176,11 +214,41 @@ func eligiblePOSIXProtectedGitException(file *syntax.File, depth int, home strin
 // inspectCommand. "declare", "local", "readonly", and "typeset" parse the same
 // way; only "export" reaches beyond the current shell.
 func (a *analyzer) inspectDeclClause(decl *syntax.DeclClause) {
-	if decl.Variant == nil || decl.Variant.Value != "export" {
+	if decl.Variant == nil {
 		return
 	}
+	exportVariables := decl.Variant.Value == "export"
+	unexportVariables := false
 	for _, assign := range decl.Args {
-		a.inspectAssign(assign, "export")
+		if assign == nil || !assign.Naked {
+			continue
+		}
+		option := ""
+		if assign.Name != nil {
+			option = assign.Name.Value
+		} else if assign.Value != nil {
+			value := evalWord(assign.Value, a.home, a.assignments)
+			if value.Known {
+				option = value.Value
+			}
+		}
+		switch option {
+		case "-x":
+			exportVariables = true
+			unexportVariables = false
+		case "+x", "-n":
+			exportVariables = false
+			unexportVariables = true
+		}
+	}
+	for _, assign := range decl.Args {
+		a.observeGitHubShellAssignment(assign)
+		if exportVariables {
+			a.inspectAssign(assign, "export")
+			a.observeExportedGitHubEnvironment(assign)
+		} else if unexportVariables {
+			a.observeUnexportedGitHubEnvironment(assign)
+		}
 	}
 }
 
@@ -197,7 +265,15 @@ func (a *analyzer) inspectAssign(assign *syntax.Assign, command string) {
 }
 
 func (a *analyzer) inspectEnvAssignments(args []string, known []bool) {
-	for i, arg := range args {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			return
+		}
+		if envOptionTakesValue(arg) {
+			i++
+			continue
+		}
 		if strings.HasPrefix(arg, "-") {
 			continue
 		}
@@ -218,6 +294,9 @@ func (a *analyzer) inspectPOSIXCall(call *syntax.CallExpr, depth int) {
 		a.inspectAssign(assign, "assignment")
 	}
 	if len(call.Args) == 0 {
+		for _, assign := range call.Assigns {
+			a.observeGitHubShellAssignment(assign)
+		}
 		return
 	}
 	words := make([]wordValue, 0, len(call.Args))
@@ -249,9 +328,36 @@ func (a *analyzer) inspectPOSIXCall(call *syntax.CallExpr, depth int) {
 	// while they are still visible.
 	if normalizeCommandName(argv[0]) == "env" {
 		a.inspectEnvAssignments(argv[1:], known[1:])
+		if payload, payloadKnown, present := envSplitString(argv[1:], known[1:]); present {
+			if payloadKnown {
+				a.analyzePOSIXSource(payload, depth+1)
+			} else {
+				a.add(Review, "dynamic-shell-code", "env", "")
+			}
+		}
 	}
+	repositoryOverride, hasRepositoryOverride := posixGitHubEnvironmentOverride("GH_REPO", call.Assigns, argv, known, a.home, a.assignments)
+	hostOverride, hasHostOverride := posixGitHubEnvironmentOverride("GH_HOST", call.Assigns, argv, known, a.home, a.assignments)
+	a.observePOSIXGitHubEnvironmentCWD(argv, known)
 	argv, known = unwrapCommand(argv, known)
+	previousRepositoryOverride := a.githubRepositoryOverride
+	previousHostOverride := a.githubHostOverride
+	if hasRepositoryOverride {
+		a.githubRepositoryOverride = &repositoryOverride
+	}
+	if hasHostOverride {
+		a.githubHostOverride = &hostOverride
+	}
+	defer func() {
+		if hasRepositoryOverride {
+			a.githubRepositoryOverride = previousRepositoryOverride
+		}
+		if hasHostOverride {
+			a.githubHostOverride = previousHostOverride
+		}
+	}()
 	a.inspectCommand(argv, known, depth)
+	a.observePOSIXGitHubWorkingDirectory(argv, known)
 }
 
 func (a *analyzer) inspectCommand(argv []string, known []bool, depth int) {
@@ -261,6 +367,7 @@ func (a *analyzer) inspectCommand(argv []string, known []bool, depth int) {
 	command := normalizeCommandName(argv[0])
 	args := argv[1:]
 	argKnown := known[1:]
+	defer a.observeGitHubRepositoryContext(command, args, argKnown)
 
 	if isShell(command) {
 		if index := shellCodeIndex(args); index >= 0 {
@@ -277,11 +384,19 @@ func (a *analyzer) inspectCommand(argv []string, known []bool, depth int) {
 		a.inspectInterpreterPayloads(command, args, argKnown)
 		a.add(Review, "inline-interpreter-code", command, "")
 	}
-	if command == "xargs" && containsExecutionGateway(args) {
-		if payload, ok := gatewayShellPayload(args, argKnown); ok {
-			a.analyzePOSIXSource(payload, depth+1)
-		} else {
-			a.add(Review, "indirect-execution-gateway", command, "")
+	if command == "xargs" {
+		if containsExecutionGateway(args) {
+			if payload, ok := gatewayShellPayload(args, argKnown); ok {
+				a.analyzePOSIXSource(payload, depth+1)
+			} else {
+				a.add(Review, "indirect-execution-gateway", command, "")
+			}
+		} else if nested, ok := xargsExecCommand(args, argKnown); ok {
+			if depth >= 4 {
+				a.add(Review, "nested-shell-depth", command, "")
+			} else {
+				a.inspectCommand(nested.argv, nested.known, depth+1)
+			}
 		}
 	}
 	if command == "find" {
@@ -461,11 +576,14 @@ func (a *analyzer) inspectCommand(argv []string, known []bool, depth int) {
 		}
 	case "eval", "source", ".":
 		a.add(Review, "dynamic-code-gateway", command, "")
+	case "alias":
+		a.inspectShellAliasDefinitions(args, argKnown, depth)
 	case "brew":
 		if firstSubcommand(args) == "uninstall" || firstSubcommand(args) == "remove" || firstSubcommand(args) == "untap" {
 			a.add(Review, "package-removal", command, "")
 		}
 	case "gh":
+		a.inspectGitHub(args, argKnown)
 		if ghDestroys(args) {
 			a.add(Block, "repository-administration", command, "")
 		}
@@ -502,6 +620,19 @@ func (a *analyzer) inspectCommand(argv []string, known []bool, depth int) {
 		}
 	case "cat", "head", "tail", "less", "more", "grep", "rg", "awk", "base64", "strings", "xxd", "od", "hexdump", "cut", "sort", "uniq", "wc", "jq", "yq", "openssl":
 		a.inspectSensitiveReadArgs(command, args, argKnown)
+	}
+}
+
+func (a *analyzer) inspectShellAliasDefinitions(args []string, known []bool, depth int) {
+	for i, arg := range args {
+		if i >= len(known) || !known[i] {
+			continue
+		}
+		_, payload, definition := strings.Cut(arg, "=")
+		if !definition || strings.TrimSpace(payload) == "" {
+			continue
+		}
+		a.analyzePOSIXSource(payload, depth+1)
 	}
 }
 
@@ -892,16 +1023,76 @@ func gatewayShellPayload(args []string, known []bool) (string, bool) {
 	return "", false
 }
 
+// xargsExecCommand recovers a directly named command and its fixed arguments.
+// Input read by xargs may append arguments, and replacement operands are marked
+// dynamic, but neither can erase the fixed command prefix being inspected.
+func xargsExecCommand(args []string, known []bool) (findExecCommand, bool) {
+	replacement := xargsReplacement(args)
+	commandIndex := -1
+	for i := 0; i < len(args); i++ {
+		if i >= len(known) || !known[i] {
+			return findExecCommand{}, false
+		}
+		arg := args[i]
+		if arg == "--" {
+			if i+1 < len(args) {
+				commandIndex = i + 1
+			}
+			break
+		}
+		if xargsOptionTakesValue(arg) {
+			i++
+			if i >= len(args) || i >= len(known) || !known[i] {
+				return findExecCommand{}, false
+			}
+			continue
+		}
+		if strings.HasPrefix(arg, "-") {
+			continue
+		}
+		commandIndex = i
+		break
+	}
+	if commandIndex < 0 || commandIndex >= len(args) {
+		return findExecCommand{}, false
+	}
+	argv := append([]string(nil), args[commandIndex:]...)
+	argvKnown := append([]bool(nil), known[commandIndex:]...)
+	if replacement != "" {
+		for i, arg := range argv {
+			if strings.Contains(arg, replacement) {
+				argvKnown[i] = false
+			}
+		}
+	}
+	return findExecCommand{argv: argv, known: argvKnown}, true
+}
+
+func xargsOptionTakesValue(arg string) bool {
+	switch arg {
+	case "-a", "--arg-file", "-d", "--delimiter", "-E", "-I",
+		"-L", "--max-lines", "-n", "--max-args", "-P", "--max-procs", "-s", "--max-chars",
+		"--process-slot-var":
+		return true
+	default:
+		return false
+	}
+}
+
 // xargsReplacement returns the token xargs substitutes with each input item, or
 // an empty string when the invocation does not use one.
 func xargsReplacement(args []string) string {
 	for i, arg := range args {
 		switch {
-		case arg == "-I" || arg == "-i" || arg == "--replace":
+		case arg == "-I":
 			if i+1 < len(args) {
 				return args[i+1]
 			}
+		case arg == "-i" || arg == "--replace":
+			return "{}"
 		case strings.HasPrefix(arg, "-I") && len(arg) > 2:
+			return arg[2:]
+		case strings.HasPrefix(arg, "-i") && len(arg) > 2:
 			return arg[2:]
 		case strings.HasPrefix(arg, "--replace="):
 			return strings.TrimPrefix(arg, "--replace=")
@@ -1371,21 +1562,21 @@ func evalWord(word *syntax.Word, home string, assignments map[string]string) wor
 				case *syntax.ParamExp:
 					value, ok := expand(nested)
 					if !ok {
-						return wordValue{Known: false}
+						return wordValue{Value: builder.String(), Known: false}
 					}
 					builder.WriteString(value)
 				default:
-					return wordValue{Known: false}
+					return wordValue{Value: builder.String(), Known: false}
 				}
 			}
 		case *syntax.ParamExp:
 			value, ok := expand(part)
 			if !ok {
-				return wordValue{Known: false}
+				return wordValue{Value: builder.String(), Known: false}
 			}
 			builder.WriteString(value)
 		default:
-			return wordValue{Known: false}
+			return wordValue{Value: builder.String(), Known: false}
 		}
 	}
 	value := builder.String()
@@ -1399,19 +1590,137 @@ func evalWord(word *syntax.Word, home string, assignments map[string]string) wor
 
 func unwrapCommand(argv []string, known []bool) ([]string, []bool) {
 	for len(argv) > 0 {
-		switch normalizeCommandName(argv[0]) {
-		case "command", "exec", "nohup", "time":
-			argv, known = argv[1:], known[1:]
-		case "env":
-			argv, known = argv[1:], known[1:]
-			for len(argv) > 0 && (strings.Contains(argv[0], "=") || strings.HasPrefix(argv[0], "-")) {
-				argv, known = argv[1:], known[1:]
-			}
-		default:
+		command := normalizeCommandName(argv[0])
+		if command == "env" {
+			argv, known = unwrapEnvArguments(argv[1:], known[1:])
+			continue
+		}
+		unwrapped, unwrappedKnown, ok := unwrapExecutionWrapper(command, argv, known)
+		if !ok {
 			return argv, known
 		}
+		argv, known = unwrapped, unwrappedKnown
 	}
 	return argv, known
+}
+
+func unwrapExecutionWrapper(command string, argv []string, known []bool) ([]string, []bool, bool) {
+	if len(argv) == 0 {
+		return argv, known, false
+	}
+	args, argKnown := argv[1:], known[1:]
+	switch command {
+	case "command":
+		if containsAny(args, "-v", "-V") {
+			return nil, nil, true
+		}
+		args, argKnown = unwrapCommandOptions(args, argKnown, nil)
+	case "exec":
+		args, argKnown = unwrapCommandOptions(args, argKnown, map[string]bool{"-a": true})
+	case "nohup", "setsid":
+		args, argKnown = unwrapCommandOptions(args, argKnown, nil)
+	case "time":
+		args, argKnown = unwrapCommandOptions(args, argKnown, map[string]bool{"-f": true, "--format": true, "-o": true, "--output": true})
+	case "nice":
+		args, argKnown = unwrapCommandOptions(args, argKnown, map[string]bool{"-n": true, "--adjustment": true})
+	case "stdbuf":
+		args, argKnown = unwrapCommandOptions(args, argKnown, map[string]bool{"-i": true, "--input": true, "-o": true, "--output": true, "-e": true, "--error": true})
+	case "timeout":
+		args, argKnown = unwrapCommandOptions(args, argKnown, map[string]bool{"-k": true, "--kill-after": true, "-s": true, "--signal": true})
+		if len(args) == 0 {
+			return nil, nil, true
+		}
+		args, argKnown = args[1:], argKnown[1:]
+	default:
+		return argv, known, false
+	}
+	return args, argKnown, true
+}
+
+func wrappedEnvCommandIndex(argv []string, known []bool) int {
+	offset := 0
+	for len(argv) > 0 {
+		command := normalizeCommandName(argv[0])
+		if command == "env" {
+			return offset
+		}
+		unwrapped, unwrappedKnown, ok := unwrapExecutionWrapper(command, argv, known)
+		if !ok || len(unwrapped) >= len(argv) {
+			return -1
+		}
+		offset += len(argv) - len(unwrapped)
+		argv, known = unwrapped, unwrappedKnown
+	}
+	return -1
+}
+
+func unwrapEnvArguments(argv []string, known []bool) ([]string, []bool) {
+	for len(argv) > 0 {
+		arg := argv[0]
+		if arg == "--" {
+			return argv[1:], known[1:]
+		}
+		if envOptionTakesValue(arg) {
+			if len(argv) < 2 {
+				return nil, nil
+			}
+			argv, known = argv[2:], known[2:]
+			continue
+		}
+		if strings.Contains(arg, "=") || strings.HasPrefix(arg, "-") {
+			argv, known = argv[1:], known[1:]
+			continue
+		}
+		return argv, known
+	}
+	return argv, known
+}
+
+func unwrapCommandOptions(argv []string, known []bool, takesValue map[string]bool) ([]string, []bool) {
+	for len(argv) > 0 {
+		arg := argv[0]
+		if arg == "--" {
+			return argv[1:], known[1:]
+		}
+		if !strings.HasPrefix(arg, "-") || arg == "-" {
+			return argv, known
+		}
+		if takesValue[arg] {
+			if len(argv) < 2 {
+				return nil, nil
+			}
+			argv, known = argv[2:], known[2:]
+			continue
+		}
+		argv, known = argv[1:], known[1:]
+	}
+	return argv, known
+}
+
+func envOptionTakesValue(arg string) bool {
+	switch arg {
+	case "-a", "--argv0", "-C", "--chdir", "-S", "--split-string", "-u", "--unset":
+		return true
+	default:
+		return false
+	}
+}
+
+func envSplitString(args []string, known []bool) (string, bool, bool) {
+	for i, arg := range args {
+		switch {
+		case arg == "-S" || arg == "--split-string":
+			if i+1 >= len(args) || i+1 >= len(known) {
+				return "", false, true
+			}
+			return args[i+1], known[i+1], true
+		case strings.HasPrefix(arg, "--split-string="):
+			return strings.TrimPrefix(arg, "--split-string="), i < len(known) && known[i], true
+		case strings.HasPrefix(arg, "-S") && len(arg) > 2:
+			return arg[2:], i < len(known) && known[i], true
+		}
+	}
+	return "", false, false
 }
 
 func (a *analyzer) normalizePath(path string) string {

@@ -35,6 +35,7 @@ protected operation through with a weaker decision:
 
 - Recursive deletion of broad or protected paths
 - Destructive Git operations and direct commits to protected branches
+- Opt-in blocking of GitHub pull request creation for exact repositories
 - Writes, deletion, or permission changes targeting agent configuration
 - Reads of common credential and signing-key paths
 - Credential-to-network and download-to-shell pipelines
@@ -391,6 +392,60 @@ self-protection findings are not suppressible, matching the guarantee that file
 rules already provide, and an unknown or non-suppressible `rule_id` is a
 configuration error rather than a silently ignored entry. A `block` decision is
 never suppressed.
+
+### Blocking GitHub pull request creation
+
+Pull request creation can be blocked for exact GitHub repository identities.
+The guard does not query repository visibility; the repository list remains in
+the user's configuration and applies equally to private and public repositories.
+`host` defaults to `github.com` and supports GitHub Enterprise hosts.
+
+```toml
+[[github.pull_request_create_blocks]]
+repository = "example/internal-tools"
+
+[[github.pull_request_create_blocks]]
+host = "git.example.test"
+repository = "example/service"
+```
+
+Host, owner, and repository matching is exact and case-insensitive. The guard
+blocks these GitHub CLI creation paths:
+
+- `gh pr create` and its `gh pr new` alias
+- `gh agent-task create` and the `agent`, `agents`, and `agent-tasks` aliases,
+  because an agent task produces a pull request
+- `gh stack submit`
+- a mutating `gh api repos/OWNER/REPOSITORY/pulls` REST request
+- an inline GraphQL mutation containing `createPullRequest`
+
+The target is resolved, in order, from `-R`/`--repo`, inherited or literal
+`GH_REPO` and `GH_HOST` assignments, and Git remotes in the current checkout.
+Literal `cd`, `env --chdir`, and PowerShell location changes are tracked. This
+makes the policy follow a repository into linked worktrees without putting local
+checkout paths in the configuration. If any possible remote matches a configured
+identity, creation is blocked. A direct creation command whose target is
+unresolved also fails closed while the block list is nonempty.
+
+Read-only PR commands, recognized help invocations, and supported `--dry-run` modes remain allowed. This policy is
+independent of the Git branch policy: it does not block local `git merge` or
+`git push`, and it does not change a configured protected-branch exception.
+
+The policy is deliberately conservative around indirection. An unknown `gh`
+alias or extension is blocked when its resolved checkout is configured—or cannot
+be resolved—because its expansion may create a pull request. Changes to a remote
+or default repository before a creation command make that target unresolved. A
+mutating `gh api` call with a dynamic endpoint, or a GraphQL mutation loaded
+dynamically, is also blocked. GraphQL's
+`createPullRequest` identifies a repository by node ID, which cannot be matched
+to `OWNER/REPOSITORY` offline, so an explicit inline mutation is blocked whenever
+at least one repository block is configured.
+
+This remains command-line policy rather than an authorization boundary. A
+browser, MCP tool, custom executable, or allowed interpreter can create a pull
+request without exposing that action as recognizable `gh` syntax. For strict
+enforcement, also use a separate agent credential without `Pull requests: write`
+while retaining the Git transport permissions needed for direct pushes.
 
 ### Protected Git branches
 

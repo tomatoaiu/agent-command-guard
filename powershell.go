@@ -16,14 +16,15 @@ import (
 )
 
 type powerShellDocument struct {
-	ParseErrors         []string                `json:"parse_errors"`
-	Commands            []powerShellCommand     `json:"commands"`
-	Pipelines           []powerShellPipeline    `json:"pipelines"`
-	Redirections        []powerShellRedirection `json:"redirections"`
-	SingleDirectCommand bool                    `json:"single_direct_command"`
-	StatementCount      int                     `json:"statement_count"`
-	HasAssignment       bool                    `json:"has_assignment"`
-	HasChain            bool                    `json:"has_chain"`
+	ParseErrors                  []string                                `json:"parse_errors"`
+	Commands                     []powerShellCommand                     `json:"commands"`
+	Pipelines                    []powerShellPipeline                    `json:"pipelines"`
+	Redirections                 []powerShellRedirection                 `json:"redirections"`
+	SingleDirectCommand          bool                                    `json:"single_direct_command"`
+	StatementCount               int                                     `json:"statement_count"`
+	HasAssignment                bool                                    `json:"has_assignment"`
+	HasChain                     bool                                    `json:"has_chain"`
+	GitHubEnvironmentAssignments []powerShellGitHubEnvironmentAssignment `json:"github_environment_assignments"`
 }
 
 type powerShellCommand struct {
@@ -38,6 +39,11 @@ type powerShellElement struct {
 	Value string `json:"value"`
 	Text  string `json:"text"`
 	Known bool   `json:"known"`
+}
+
+type powerShellGitHubEnvironmentAssignment struct {
+	Name  string            `json:"name"`
+	Value powerShellElement `json:"value"`
 }
 
 type powerShellPipeline struct {
@@ -159,6 +165,30 @@ $hasChain = @(
     }, $true)
 ).Count -gt 0
 
+$githubEnvironmentAssignments = @(
+    $ast.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+            $node.Left -is [System.Management.Automation.Language.VariableExpressionAst] -and
+            ([string] $node.Left.VariablePath.UserPath -ieq 'env:GH_REPO' -or
+             [string] $node.Left.VariablePath.UserPath -ieq 'env:GH_HOST')
+    }, $true) | ForEach-Object {
+        $right = $_.Right
+        if ($right -is [System.Management.Automation.Language.CommandExpressionAst]) {
+            $right = $right.Expression
+        }
+        $value = Convert-GuardValue $right
+        if ([string] $_.Operator -ne 'Equals') {
+            $value.known = $false
+            $value.value = ''
+        }
+        [pscustomobject] [ordered] @{
+            name = ([string] $_.Left.VariablePath.UserPath).Substring(4).ToUpperInvariant()
+            value = $value
+        }
+    }
+)
+
 $singleDirectCommand = $false
 if ($parseErrors.Count -eq 0 -and $ast.EndBlock.Statements.Count -eq 1) {
     $statement = $ast.EndBlock.Statements[0]
@@ -176,6 +206,7 @@ $result = [pscustomobject] [ordered] @{
     statement_count = [int] $ast.EndBlock.Statements.Count
     has_assignment = $hasAssignment
     has_chain = $hasChain
+    github_environment_assignments = @($githubEnvironmentAssignments)
 }
 
 $json = $result | ConvertTo-Json -Depth 10 -Compress
@@ -199,6 +230,40 @@ func (a *analyzer) analyzePowerShellSource(source string, depth int) {
 	previousEligibility := a.protectedGitExceptionEligibility
 	a.protectedGitExceptionEligibility = eligiblePowerShellProtectedGitException(document, depth)
 	defer func() { a.protectedGitExceptionEligibility = previousEligibility }()
+	previousAliases := a.powerShellGitHubAliases
+	a.powerShellGitHubAliases = make(map[string]bool, len(previousAliases))
+	for name, targetsGitHub := range previousAliases {
+		a.powerShellGitHubAliases[name] = targetsGitHub
+	}
+	defer func() { a.powerShellGitHubAliases = previousAliases }()
+	previousRepositoryOverride := a.githubRepositoryOverride
+	previousHostOverride := a.githubHostOverride
+	overrides := make(map[string]wordValue)
+	ambiguous := make(map[string]bool)
+	for _, assignment := range document.GitHubEnvironmentAssignments {
+		value := wordValue{Value: assignment.Value.Value, Known: assignment.Value.Known}
+		if previous, ok := overrides[assignment.Name]; ok && (previous.Known != value.Known || previous.Value != value.Value) {
+			ambiguous[assignment.Name] = true
+		}
+		if ambiguous[assignment.Name] {
+			overrides[assignment.Name] = wordValue{Known: false}
+		} else {
+			overrides[assignment.Name] = value
+		}
+	}
+	for name, value := range overrides {
+		value := value
+		switch name {
+		case "GH_REPO":
+			a.githubRepositoryOverride = &value
+		case "GH_HOST":
+			a.githubHostOverride = &value
+		}
+	}
+	defer func() {
+		a.githubRepositoryOverride = previousRepositoryOverride
+		a.githubHostOverride = previousHostOverride
+	}()
 	for _, command := range document.Commands {
 		a.inspectPowerShellCommand(command, depth)
 	}
@@ -330,7 +395,13 @@ func (a *analyzer) inspectPowerShellCommand(command powerShellCommand, depth int
 	}
 	rawName := command.Name
 	name := canonicalPowerShellCommand(rawName)
+	if a.powerShellGitHubAliases[strings.ToLower(name)] {
+		rawName = "gh"
+		name = "gh"
+	}
 	args, known := powerShellArgv(command.Elements)
+	defer a.observePowerShellGitHubWorkingDirectory(name, command)
+	defer a.observePowerShellGitHubAlias(name, command)
 	if (name == "curl" || name == "wget") && powerShellHasParameter(command, "infile") {
 		a.add(Block, "file-upload", name, "")
 	}
@@ -692,6 +763,9 @@ func canonicalPowerShellCommand(command string) string {
 		"ni": "new-item", "clc": "clear-content", "ac": "add-content", "sc": "set-content",
 		"iex": "invoke-expression", "iwr": "invoke-webrequest", "irm": "invoke-restmethod",
 		"saps": "start-process", "start": "start-process",
+		"cd": "set-location", "chdir": "set-location", "sl": "set-location",
+		"pushd": "push-location", "popd": "pop-location",
+		"sal": "set-alias", "nal": "new-alias", "rmal": "remove-alias",
 	}
 	if canonical, ok := aliases[name]; ok {
 		return canonical
