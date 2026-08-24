@@ -53,6 +53,8 @@ type analyzer struct {
 	powerShellGitHubAliases          map[string]bool
 	suppressions                     []Suppression
 	assignments                      map[string]string
+	assignedNames                    map[string]bool
+	forExpansions                    int
 	findings                         []Finding
 }
 
@@ -141,9 +143,15 @@ func (a *analyzer) analyzePOSIXSource(source string, depth int) {
 	// not inherit them, which keeps an unresolved name dynamic rather than
 	// resolving it from an unrelated scope.
 	previousAssignments := a.assignments
+	previousAssignedNames := a.assignedNames
 	a.assignments = literalAssignments(file, a.home)
-	defer func() { a.assignments = previousAssignments }()
-	syntax.Walk(file, func(node syntax.Node) bool {
+	a.assignedNames = assignedNames(file)
+	defer func() {
+		a.assignments = previousAssignments
+		a.assignedNames = previousAssignedNames
+	}()
+	var inspect func(node syntax.Node) bool
+	inspect = func(node syntax.Node) bool {
 		switch node := node.(type) {
 		case *syntax.CallExpr:
 			a.inspectPOSIXCall(node, depth)
@@ -159,9 +167,85 @@ func (a *analyzer) analyzePOSIXSource(source string, depth int) {
 			if node.Op == syntax.Pipe || node.Op == syntax.PipeAll {
 				a.inspectPipeline(node)
 			}
+		case *syntax.ForClause:
+			if a.inspectForCandidates(node, inspect) {
+				return false
+			}
 		}
 		return true
-	})
+	}
+	syntax.Walk(file, inspect)
+}
+
+// forCandidateBudget bounds how many times a loop body may be re-analyzed
+// across one input, so that nested loops over long word lists cannot turn a
+// hook call into a hang. Past the budget a loop is walked once with its
+// variable unresolved, which is the same conservative reading as before.
+const forCandidateBudget = 256
+
+// inspectForCandidates analyzes "for name in a b c" once per item, with name
+// bound to that item, so that a path built from the loop variable is resolved
+// instead of being reported as dynamic:
+//
+//	SCRATCH=/tmp/work; for p in linux darwin; do rm -rf "$SCRATCH/$p"; done
+//
+// Every item is analyzed, so a body that is dangerous for any one of them is
+// still reported; resolving only the first item would describe one iteration as
+// if it were the whole loop.
+//
+// It reports whether it consumed the loop. When it did not, the caller walks
+// the loop as before and the variable stays unresolved.
+func (a *analyzer) inspectForCandidates(clause *syntax.ForClause, inspect func(syntax.Node) bool) bool {
+	if clause.Select {
+		return false
+	}
+	iter, ok := clause.Loop.(*syntax.WordIter)
+	// A C-style loop carries no word list, and an empty item list iterates over
+	// the positional parameters, which the source does not carry either.
+	if !ok || iter.Name == nil || len(iter.Items) == 0 {
+		return false
+	}
+	name := iter.Name.Value
+	// An assignment to the same name decides what the body actually sees, and
+	// literalAssignments has already resolved it. Binding the item over that
+	// would describe an iteration that never happens, so the loop is left
+	// alone: "for p in safe; do p=/; rm -rf \"$p\"; done" still reads as "/".
+	if a.assignedNames[name] {
+		return false
+	}
+	if a.forExpansions+len(iter.Items) > forCandidateBudget {
+		return false
+	}
+	// resolvedWordValue is what assignments already use, so an item resolves
+	// under the same rules: a glob is refused because the shell decides its
+	// value from the filesystem rather than from the source.
+	values := make([]string, 0, len(iter.Items))
+	for _, item := range iter.Items {
+		value, ok := resolvedWordValue(item, a.assignments)
+		if !ok {
+			return false
+		}
+		values = append(values, value)
+	}
+	a.forExpansions += len(values)
+	if a.assignments == nil {
+		a.assignments = make(map[string]string)
+	}
+	previous, had := a.assignments[name]
+	defer func() {
+		if had {
+			a.assignments[name] = previous
+			return
+		}
+		delete(a.assignments, name)
+	}()
+	for _, value := range values {
+		a.assignments[name] = value
+		for _, stmt := range clause.Do {
+			syntax.Walk(stmt, inspect)
+		}
+	}
+	return true
 }
 
 func eligiblePOSIXProtectedGitException(file *syntax.File, depth int, home string) protectedGitExceptionEligibility {

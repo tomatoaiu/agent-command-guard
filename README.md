@@ -16,15 +16,22 @@ returns one of three decisions:
 The guard emits hook responses compatible with Claude Code and Codex
 integrations that use the Claude-style `PreToolUse` JSON protocol.
 
-Two constructs are resolved from the source text rather than treated as opaque,
-because leaving either unresolved both reviews ordinary work and lets a
-protected operation through with a weaker decision:
+Three constructs are resolved from the source text rather than treated as
+opaque, because leaving any of them unresolved both reviews ordinary work and
+lets a protected operation through with a weaker decision:
 
 - **A variable whose value the input fixes.** In `R=/repo; git -C $R push origin
   main` the repository is known, so the push is blocked as a protected push
   rather than reviewed for an unidentified working directory — and `git -C $R
   add -A` is simply allowed. A value that is not fully literal, is assigned
   twice with different text, or is transformed on expansion stays unresolved.
+- **A `for` loop over a fixed word list.** The body is analyzed once per item,
+  so `for p in linux darwin; do rm -rf "$SP/x/$p"; done` is judged as the two
+  literal paths it deletes instead of being reviewed as a dynamic target — and
+  `for p in ok ../../..; do rm -rf "/tmp/w/$p"; done` is blocked on the item
+  that escapes the directory. A word list built from a glob, a command
+  substitution, or the positional parameters stays unresolved, as does a loop
+  whose variable the input also assigns to.
 - **A fixed payload passed through `xargs`.** The payload is analyzed, so
   `xargs -I {} sh -c 'cd "$1" && git log'` is allowed while `xargs -I {} sh -c
   'curl … | sh'` is blocked. Previously both only reached `review`. A payload
