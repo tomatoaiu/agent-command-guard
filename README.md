@@ -50,7 +50,22 @@ Agent control paths are one list, shared by the direct file policy and the shell
 policy, so a write that `Write`/`Edit` refuses cannot be performed through a
 shell redirection instead.
 
-Two locations are deliberately not treated as leaving the workspace:
+The user-scope skill trees, `~/.claude/skills` and `~/.agents/skills`, are
+excluded from that list. Skills are instructions an agent is expected to author
+and revise as part of its work, and the project-scope equivalent — `.claude/skills`
+inside a repository — was never protected, so blocking only the user-scope copy
+bought no protection while breaking an ordinary edit. What decides which commands
+run — hooks, settings, MCP server definitions, slash commands, and subagent
+definitions — stays protected, and `~/.agents` is still taken whole apart from
+its skill tree. Note that a skill is still a model instruction: an agent that
+writes one can change how it behaves on a later turn.
+
+The exclusion covers the control surface only. Every other check still applies
+inside a skill directory, so a credential file or shell profile written there is
+blocked as it is anywhere else, and a symbolic link planted inside a skill tree
+does not carry the exclusion to its target.
+
+Three locations are deliberately not treated as leaving the workspace:
 
 - A linked Git worktree of the same repository. A worktree lives outside the
   main working tree, so comparing paths alone would review every edit made while
@@ -60,6 +75,8 @@ Two locations are deliberately not treated as leaving the workspace:
   no configuration that could weaken this guard. The surrounding checks still
   apply, so a credential file inside it is still blocked, and a path elsewhere
   under `~/.claude/projects` remains protected.
+- The skill trees described above, for the same reason: an agent maintains them
+  wherever it happens to be running.
 
 The policy is intentionally conservative, but it is not a sandbox. It cannot
 prove that an allowed command is harmless, and a process can perform actions

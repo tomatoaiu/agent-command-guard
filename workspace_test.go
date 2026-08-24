@@ -1,8 +1,10 @@
 package main
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -100,7 +102,9 @@ func TestAgentControlSurfaceStaysProtected(t *testing.T) {
 		path string
 	}{
 		{"credential file inside the runtime area", filepath.Join(claude, "projects", "project", "memory", ".env")},
-		{"skills", filepath.Join(claude, "skills", "daily", "SKILL.md")},
+		{"credential file inside a skill tree", filepath.Join(claude, "skills", "daily", ".env")},
+		// ~/.agents is carved out for its skill tree only; the rest stays whole.
+		{"pi control entry beside the skill tree", filepath.Join(home, ".agents", "config.json")},
 		{"settings", filepath.Join(claude, "settings.json")},
 		{"local settings", filepath.Join(claude, "settings.local.json")},
 		{"instructions", filepath.Join(claude, "CLAUDE.md")},
@@ -134,10 +138,10 @@ func TestShellRedirectionMatchesFilePolicyForAgentControl(t *testing.T) {
 		name string
 		path string
 	}{
-		{"skills", filepath.Join(home, ".claude", "skills", "daily", "SKILL.md")},
 		{"settings", filepath.Join(home, ".claude", "settings.json")},
 		{"agents", filepath.Join(home, ".claude", "agents", "reviewer.md")},
 		{"codex config", filepath.Join(home, ".codex", "config.toml")},
+		{"pi control entry beside the skill tree", filepath.Join(home, ".agents", "config.json")},
 	}
 	for _, test := range blocked {
 		t.Run(test.name, func(t *testing.T) {
@@ -153,9 +157,87 @@ func TestShellRedirectionMatchesFilePolicyForAgentControl(t *testing.T) {
 		})
 	}
 
-	memory := filepath.Join(home, ".claude", "projects", "project", "memory", "note.md")
-	result := analyzePOSIXWithConfig("echo x > "+memory, workspace, Config{})
-	if result.Decision != Allow {
-		t.Fatalf("memory store: got %s, want allow; findings=%+v", result.Decision, result.Findings)
+	// The carve-out has to hold on both sides too, or a redirection would be
+	// refused for a path Write/Edit accepts.
+	allowed := []struct {
+		name string
+		path string
+	}{
+		{"claude skills", filepath.Join(home, ".claude", "skills", "daily", "SKILL.md")},
+		{"pi skills", filepath.Join(home, ".agents", "skills", "daily", "SKILL.md")},
+		{"memory store", filepath.Join(home, ".claude", "projects", "project", "memory", "note.md")},
+	}
+	for _, test := range allowed {
+		t.Run(test.name, func(t *testing.T) {
+			result := analyzePOSIXWithConfig("echo x > "+test.path, workspace, Config{})
+			if result.Decision != Allow {
+				t.Fatalf("got %s, want allow; findings=%+v", result.Decision, result.Findings)
+			}
+			direct := AnalyzeFile(FileWrite, test.path, workspace, Config{})
+			if direct.Decision != Allow {
+				t.Fatalf("direct write disagrees with the shell policy: got %s", direct.Decision)
+			}
+		})
+	}
+}
+
+// Skills are instructions the agent authors as part of its work, so writing one
+// is allowed outright rather than reviewed for leaving the workspace.
+func TestAgentSkillTreesAreWritable(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	workspace := t.TempDir()
+
+	trees := []struct {
+		name string
+		path string
+	}{
+		{"claude", filepath.Join(home, ".claude", "skills", "daily", "SKILL.md")},
+		{"pi", filepath.Join(home, ".agents", "skills", "daily", "SKILL.md")},
+	}
+	for _, tree := range trees {
+		for _, operation := range []FileOperation{FileWrite, FileEdit} {
+			t.Run(tree.name+"/"+string(operation), func(t *testing.T) {
+				result := AnalyzeFile(operation, tree.path, workspace, Config{})
+				if result.Decision != Allow {
+					t.Fatalf("got %s, want allow; findings=%+v", result.Decision, result.Findings)
+				}
+			})
+		}
+	}
+}
+
+// A link planted inside a skill tree must not carry the carve-out with it, or
+// the exception would become a path to everything it excludes.
+func TestSkillTreeSymlinkCannotEscapeTheCarveOut(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows symlink creation depends on runner privileges")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	workspace := t.TempDir()
+
+	skills := filepath.Join(home, ".claude", "skills")
+	hooks := filepath.Join(home, ".claude", "hooks")
+	for _, directory := range []string{skills, hooks} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	link := filepath.Join(skills, "escape")
+	if err := os.Symlink(hooks, link); err != nil {
+		t.Fatal(err)
+	}
+
+	target := filepath.Join(link, "guard.sh")
+	result := AnalyzeFile(FileWrite, target, workspace, Config{})
+	if result.Decision != Block || !hasRule(result, "sensitive-file-write") {
+		t.Fatalf("direct write: got %s, want block; findings=%+v", result.Decision, result.Findings)
+	}
+	shell := analyzePOSIXWithConfig("echo x > "+target, workspace, Config{})
+	if shell.Decision != Block {
+		t.Fatalf("redirection: got %s, want block; findings=%+v", shell.Decision, shell.Findings)
 	}
 }

@@ -142,6 +142,9 @@ func sensitiveReadReview(normalized, resolved, home string) bool {
 }
 
 func sensitiveWriteBlocked(normalized, resolved string, a *analyzer) bool {
+	// The skill trees are carved out of the control surface, but only from it:
+	// a credential or a shell profile dropped inside one is still blocked below.
+	skillWrite := agentSkillWrite(normalized, resolved, a.home)
 	for _, path := range []string{normalized, resolved} {
 		base := strings.ToLower(filepath.Base(path))
 		if dotenvBasename(base) || privateKeyBasename(base) || decryptionKeyBasename(base) ||
@@ -154,6 +157,9 @@ func sensitiveWriteBlocked(normalized, resolved string, a *analyzer) bool {
 			pathHasDirectory(path, ".gcloud") || pathHasDirectory(path, ".git", "hooks") ||
 			pathHasDirectory(path, "Library", "LaunchAgents") || pathHasDirectory(path, "Library", "LaunchDaemons") {
 			return true
+		}
+		if skillWrite {
+			continue
 		}
 		for _, root := range protectedFileWriteRoots(a) {
 			if pathMatchesRoot(path, root) {
