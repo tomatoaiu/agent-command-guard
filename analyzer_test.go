@@ -45,7 +45,10 @@ func TestAnalyzeCorpus(t *testing.T) {
 		// ~/.claude mixes the control surface with the agent's runtime area, so
 		// the two are judged separately rather than by the directory they share.
 		{"claude settings redirection", "> ~/.claude/settings.json", Block, "protected-redirection"},
-		{"claude skill redirection", "echo x > ~/.claude/skills/evil/SKILL.md", Block, "protected-redirection"},
+		{"claude skill redirection", "echo x > ~/.claude/skills/daily/SKILL.md", Allow, ""},
+		{"pi skill redirection", "echo x > ~/.agents/skills/daily/SKILL.md", Allow, ""},
+		{"pi control redirection", "> ~/.agents/config.json", Block, "protected-redirection"},
+		{"credential inside a skill tree", "echo x > ~/.claude/skills/daily/.env", Block, "protected-redirection"},
 		{"claude instructions redirection", "> ~/.claude/CLAUDE.md", Block, "protected-redirection"},
 		{"user scope state redirection", "> ~/.claude.json", Block, "protected-redirection"},
 		{"claude transcript redirection", "echo x > ~/.claude/projects/p/session.jsonl", Allow, ""},

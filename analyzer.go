@@ -1744,8 +1744,11 @@ func (a *analyzer) protectedPath(path string) bool {
 		filepath.Join(a.home, ".gcloud"),
 	}
 	// Agent control roots are shared with the direct file policy so that a shell
-	// redirection cannot reach a path that Write/Edit refuses.
-	protected = append(protected, agentControlRoots(a.home)...)
+	// redirection cannot reach a path that Write/Edit refuses. The skill trees
+	// are carved out of both for the same reason, which keeps the two in step.
+	if !agentSkillWrite(normalized, resolved, a.home) {
+		protected = append(protected, agentControlRoots(a.home)...)
+	}
 	for _, root := range protected {
 		if pathWithin(normalized, root) || pathWithin(resolved, resolvePathSymlinks(root)) {
 			return true
