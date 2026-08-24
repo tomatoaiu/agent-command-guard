@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/tomatoaiu/agent-command-guard/compare/v0.7.0...v0.8.0) (2026-08-24)
+
+
+### Features
+
+* let an agent write its own user-scope skills ([#56](https://github.com/tomatoaiu/agent-command-guard/issues/56)) ([ebad0a1](https://github.com/tomatoaiu/agent-command-guard/commit/ebad0a10bc621f246f29e55606865d8d4edf7aac))
+
 ## [0.7.0](https://github.com/tomatoaiu/agent-command-guard/compare/v0.6.4...v0.7.0) (2026-08-23)
 
 
