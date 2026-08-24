@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestAnalyzeCorpus(t *testing.T) {
@@ -34,6 +35,18 @@ func TestAnalyzeCorpus(t *testing.T) {
 		{"home delete", "rm -rf ~", Block, "recursive-delete-protected"},
 		{"codex hooks delete", "rm -rf ~/.codex/hooks", Block, "recursive-delete-protected"},
 		{"dynamic recursive delete", "rm -rf \"$TARGET\"", Review, "dynamic-recursive-delete"},
+		// A loop variable is resolved item by item, so a path built from one is
+		// judged like any other literal path, and every item is judged.
+		{"for loop delete", "SP=/tmp/w; for p in linux darwin; do rm -rf \"$SP/x/$p\"; done", Allow, ""},
+		{"for loop delete dangerous item", "for p in ok ../../..; do rm -rf \"/tmp/w/$p\"; done", Block, "recursive-delete-protected"},
+		{"for loop delete late item", "for p in a b; do rm -rf \"$HOME/$p\"; done", Allow, ""},
+		{"for loop delete home item", "for p in a .ssh; do rm -rf \"$HOME/$p\"; done", Block, "recursive-delete-protected"},
+		{"for loop reassigned variable", "for p in safe; do p=/; rm -rf \"$p\"; done", Block, "recursive-delete-protected"},
+		{"for loop glob items", "for p in *.d; do rm -rf \"/tmp/w/$p\"; done", Review, "dynamic-recursive-delete"},
+		{"for loop substituted items", "for p in $(ls); do rm -rf \"/tmp/w/$p\"; done", Review, "dynamic-recursive-delete"},
+		{"for loop positional items", "for p; do rm -rf \"/tmp/w/$p\"; done", Review, "dynamic-recursive-delete"},
+		{"for loop c style", "for ((i = 0; i < 3; i++)); do rm -rf \"/tmp/w/$i\"; done", Review, "dynamic-recursive-delete"},
+		{"for loop variable escapes the loop", "for p in a b; do echo \"$p\"; done\nrm -rf \"/tmp/w/$p\"", Review, "dynamic-recursive-delete"},
 		{"command wrapper", "command rm --recursive --force /", Block, "recursive-delete-protected"},
 		{"env wrapper", "env FOO=1 rm -rf /", Block, "recursive-delete-protected"},
 		{"subshell", "(rm -rf /)", Block, "recursive-delete-protected"},
@@ -324,6 +337,27 @@ func TestAnalyzeCorpus(t *testing.T) {
 				t.Fatalf("missing rule %q; findings=%+v", test.rule, result.Findings)
 			}
 		})
+	}
+}
+
+// Nested loops multiply, so without the expansion budget this input would walk
+// the body a million times inside a hook that has to answer immediately. The
+// budget turns that into the unresolved reading instead.
+func TestForCandidateBudget(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX path semantics are covered on Linux and macOS")
+	}
+	items := strings.Repeat("a b c d e f g h i j ", 10)
+	command := "for x in " + items + "; do for y in " + items + "; do rm -rf \"/tmp/w/$x/$y\"; done; done"
+	done := make(chan Result, 1)
+	go func() { done <- analyzePOSIX(command, t.TempDir()) }()
+	select {
+	case result := <-done:
+		if result.Decision != Review || !hasRule(result, "dynamic-recursive-delete") {
+			t.Fatalf("decision: got %s; findings=%+v", result.Decision, result.Findings)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("analysis did not finish; the expansion budget is not bounding the walk")
 	}
 }
 

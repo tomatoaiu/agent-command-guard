@@ -82,6 +82,21 @@ func literalAssignments(file *syntax.File, home string) map[string]string {
 	return values
 }
 
+// assignedNames reports every name the input assigns to, whether or not the
+// value could be resolved. A for loop only binds its variable when the name is
+// absent here, because an assignment anywhere in the input decides what the
+// loop body reads instead of the item being iterated.
+func assignedNames(file *syntax.File) map[string]bool {
+	names := make(map[string]bool)
+	syntax.Walk(file, func(node syntax.Node) bool {
+		if assign, ok := node.(*syntax.Assign); ok && assign.Name != nil {
+			names[assign.Name.Value] = true
+		}
+		return true
+	})
+	return names
+}
+
 // resolvedWordValue returns the text of a word that carries no expansion beyond
 // the names already resolved. A glob character is rejected because the shell
 // decides its value from the filesystem rather than from the source.
