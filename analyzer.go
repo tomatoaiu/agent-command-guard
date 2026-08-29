@@ -1306,6 +1306,15 @@ func (a *analyzer) inspectGit(args []string, known []bool) {
 			a.add(Review, "git-dynamic-working-directory", "git", "dynamic")
 			return
 		}
+		// The first commit is what brings the branch into existence, so there
+		// is no shared history for the protection to defend and no other way
+		// to start the repository. This mirrors the initial push below and
+		// uses the same emptiness test: only a valid repository whose local
+		// history is demonstrably empty is exempt, and a non-repository stays
+		// protected.
+		if emptyGitHistory(gitCWD) {
+			return
+		}
 		if branch := currentBranch(gitCWD); a.protectedBranch(branch, gitCWD) {
 			if !globalsSafeForException || !safeProtectedCommitArguments(rest, restKnown) {
 				a.add(Block, "protected-branch-direct-commit", "git", branch)
