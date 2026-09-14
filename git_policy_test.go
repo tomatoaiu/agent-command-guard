@@ -7,8 +7,6 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-
-	"mvdan.cc/sh/v3/syntax"
 )
 
 func TestProtectedBranchExceptionAllowsOnlyExactMatrixCells(t *testing.T) {
@@ -45,8 +43,21 @@ func TestProtectedBranchExceptionAllowsOnlyExactMatrixCells(t *testing.T) {
 		{"message from stdin", "git commit -F -", repository},
 		{"pathspec separator", "git commit -m test -- README.md", repository},
 		{"push short ref", "git push origin main", repository},
+		{"quiet push", "git push -q origin main", repository},
 		{"push explicit ref", "git push origin main:main", repository},
 		{"push full ref", "git push origin refs/heads/main:refs/heads/main", repository},
+		{"dynamic quoted message", `git commit -m "$(date +%F)"`, repository},
+		{"benign config and dynamic message", `git -c commit.gpgsign=false commit -m "$(date +%F)"`, repository},
+		{"changed working directory", "cd " + posixLiteral(repository) + " && git commit -m test", t.TempDir()},
+		{"changed working directory or exit", "R=" + posixLiteral(repository) + `; cd "$R" || exit 1; git commit -m test`, t.TempDir()},
+		{"compound commit and push", "git commit -m test && git push origin main", repository},
+		{"compound push and status", "git push origin main && git status", repository},
+		{"compound push separator", "git push origin main; true", repository},
+		{"commit pipeline", `git commit -m test 2>&1 | tail -5`, repository},
+		{"push pipeline", `git push origin main | tee push.log`, repository},
+		{"commit redirect", `git commit -m test > commit.log`, repository},
+		{"push redirect", `git push origin main > push.log`, repository},
+		{"multiple protected invocations", "git -C " + posixLiteral(repository) + " add README.md && git -C " + posixLiteral(repository) + ` commit -m "wip $(date +%F)"`, t.TempDir()},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			result := analyzePOSIXWithConfig(test.command, test.cwd, config)
@@ -82,21 +93,17 @@ func TestProtectedBranchExceptionAllowsOnlyExactMatrixCells(t *testing.T) {
 		{"no verify", "git commit --no-verify -m test", repository, "protected-branch-direct-commit"},
 		{"short no verify", "git commit -n -m test", repository, "protected-branch-direct-commit"},
 		{"abbreviated no verify", "git commit --no-ver -m test", repository, "protected-branch-direct-commit"},
-		{"dynamic commit argument", `git commit -m "$(printf test)"`, repository, "protected-branch-direct-commit"},
-		{"compound commit and push", "git commit -m test && git push origin main", repository, "protected-branch-exception-compound-command"},
-		{"compound push and status", "git push origin main && git status", repository, "protected-branch-exception-compound-command"},
-		{"compound push separator", "git push origin main; true", repository, "protected-branch-exception-compound-command"},
-		{"commit pipeline", `git commit -m test | tee commit.log`, repository, "protected-branch-exception-pipeline"},
-		{"push pipeline", `git push origin main | tee push.log`, repository, "protected-branch-exception-pipeline"},
-		{"commit redirect", `git commit -m test > commit.log`, repository, "protected-branch-exception-redirection"},
-		{"push redirect", `git push origin main > push.log`, repository, "protected-branch-exception-redirection"},
+		{"unquoted dynamic message", `git commit -m $(printf test)`, repository, "protected-branch-direct-commit"},
+		{"dynamic option", `git commit "$(printf -- --no-verify)" -m test`, repository, "protected-branch-direct-commit"},
 		{"nested commit shell", `bash -c 'git commit -m test'`, repository, "protected-branch-exception-indirect-invocation"},
 		{"nested push shell", `bash -c 'git push origin main'`, repository, "protected-branch-exception-indirect-invocation"},
 		{"commit subshell", `(git commit -m test)`, repository, "protected-branch-exception-indirect-invocation"},
+		{"nested commit subshell", `if true; then (git commit -m test); fi`, repository, "protected-branch-exception-indirect-invocation"},
 		{"push subshell", `(git push origin main)`, repository, "protected-branch-exception-indirect-invocation"},
 		{"environment commit wrapper", `env GIT_CONFIG_NOSYSTEM=1 git commit -m test`, repository, "protected-branch-exception-indirect-invocation"},
 		{"environment push wrapper", `env GIT_CONFIG_NOSYSTEM=1 git push origin main`, repository, "protected-branch-exception-indirect-invocation"},
 		{"assignment wrapper", `GIT_CONFIG_NOSYSTEM=1 git commit -m test`, repository, "protected-branch-exception-indirect-invocation"},
+		{"shadowed git function", `git() { command git "$@"; }; git commit -m test`, repository, "protected-branch-exception-indirect-invocation"},
 		{"command wrapper", `command git push origin main`, repository, "protected-branch-exception-indirect-invocation"},
 		{"exec wrapper", `exec git push origin main`, repository, "protected-branch-exception-indirect-invocation"},
 		{"compound wrong remote", `git push upstream main && git status`, repository, "protected-branch-push"},
@@ -121,6 +128,25 @@ func TestProtectedBranchExceptionAllowsOnlyExactMatrixCells(t *testing.T) {
 		})
 	}
 
+	result := analyzePOSIXWithConfig(`git commit -m "$(rm -rf ~)"`, repository, config)
+	if result.Decision != Block || !hasRule(result, "recursive-delete-protected") || !hasRule(result, "protected-branch-exception") {
+		t.Fatalf("dangerous command substitution: got decision=%s findings=%+v", result.Decision, result.Findings)
+	}
+
+	result = analyzePOSIXWithConfig("git -C "+posixLiteral(repository)+" commit -m test && git -C "+posixLiteral(otherRepository)+" push origin main", t.TempDir(), config)
+	if result.Decision != Block || !hasRule(result, "protected-branch-push") {
+		t.Fatalf("mixed repositories: got decision=%s findings=%+v", result.Decision, result.Findings)
+	}
+	result = analyzePOSIXWithConfig("cd "+posixLiteral(otherRepository)+" && git push origin main", repository, config)
+	if result.Decision != Block || !hasRule(result, "protected-branch-push") {
+		t.Fatalf("changed to unconfigured repository: got decision=%s findings=%+v", result.Decision, result.Findings)
+	}
+
+	result = analyzePOSIXWithConfig(`git commit -m test > "$LOG"`, repository, config)
+	if result.Decision != Review || !hasRule(result, "protected-branch-exception") || !hasRule(result, "dynamic-protected-write") {
+		t.Fatalf("dynamic redirection: got decision=%s findings=%+v", result.Decision, result.Findings)
+	}
+
 	for _, command := range []string{`git push origin "$BRANCH"`, `git push "$REMOTE" main`} {
 		result := analyzePOSIXWithConfig(command, repository, config)
 		if result.Decision != Review || !hasRule(result, "git-dynamic-push-ref") {
@@ -134,39 +160,6 @@ func TestProtectedBranchExceptionAllowsOnlyExactMatrixCells(t *testing.T) {
 	}
 }
 
-func TestEligiblePOSIXProtectedGitExceptionReasons(t *testing.T) {
-	for _, test := range []struct {
-		name     string
-		command  string
-		depth    int
-		eligible bool
-		reason   protectedGitExceptionIneligibility
-	}{
-		{"direct", "git push origin main", 0, true, protectedGitExceptionEligible},
-		{"multiple statements", "git push origin main; git status", 0, false, protectedGitExceptionCompoundCommand},
-		{"and chain", "git push origin main && git status", 0, false, protectedGitExceptionCompoundCommand},
-		{"pipeline", "git push origin main | tee push.log", 0, false, protectedGitExceptionPipeline},
-		{"redirection", "git push origin main > push.log", 0, false, protectedGitExceptionRedirection},
-		{"subshell", "(git push origin main)", 0, false, protectedGitExceptionIndirect},
-		{"wrapper", "env GIT_CONFIG_NOSYSTEM=1 git push origin main", 0, false, protectedGitExceptionIndirect},
-		{"assignment", "GIT_CONFIG_NOSYSTEM=1 git commit -m test", 0, false, protectedGitExceptionIndirect},
-		{"negation", "! git push origin main", 0, false, protectedGitExceptionIndirect},
-		{"background", "git push origin main &", 0, false, protectedGitExceptionIndirect},
-		{"nested", "git push origin main", 1, false, protectedGitExceptionIndirect},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			file, err := syntax.NewParser(syntax.Variant(syntax.LangBash)).Parse(strings.NewReader(test.command), "test")
-			if err != nil {
-				t.Fatal(err)
-			}
-			got := eligiblePOSIXProtectedGitException(file, test.depth, userHomeDir())
-			if got.Eligible != test.eligible || got.Reason != test.reason {
-				t.Fatalf("got %+v, want eligible=%t reason=%q", got, test.eligible, test.reason)
-			}
-		})
-	}
-}
-
 func TestProtectedGitExceptionRuleID(t *testing.T) {
 	for reason, want := range map[protectedGitExceptionIneligibility]string{
 		protectedGitExceptionCompoundCommand: "protected-branch-exception-compound-command",
@@ -177,6 +170,42 @@ func TestProtectedGitExceptionRuleID(t *testing.T) {
 	} {
 		if got := protectedGitExceptionRuleID(reason); got != want {
 			t.Errorf("reason %q: got %q, want %q", reason, got, want)
+		}
+	}
+}
+
+func TestPOSIXGitWorkingDirectoryFollowsSuccessfulCD(t *testing.T) {
+	repository := committedRepository(t, "main")
+	worktree := filepath.Join(t.TempDir(), "feature-worktree")
+	command := exec.Command("git", "-C", repository, "worktree", "add", "-b", "feature/test", worktree)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git worktree add: %v: %s", err, output)
+	}
+
+	if result := analyzePOSIX("cd "+posixLiteral(worktree)+" && git commit -m test", repository); result.Decision != Allow {
+		t.Fatalf("feature worktree commit: got %s findings=%+v", result.Decision, result.Findings)
+	}
+	result := analyzePOSIX("cd "+posixLiteral(repository)+" && git commit -m test", worktree)
+	if result.Decision != Block || !hasRule(result, "protected-branch-direct-commit") {
+		t.Fatalf("main checkout commit: got %s findings=%+v", result.Decision, result.Findings)
+	}
+	result = analyzePOSIX("builtin cd "+posixLiteral(repository)+" && git commit -m test", worktree)
+	if result.Decision != Block || !hasRule(result, "protected-branch-direct-commit") {
+		t.Fatalf("builtin cd main checkout commit: got %s findings=%+v", result.Decision, result.Findings)
+	}
+	result = analyzePOSIX("pushd "+posixLiteral(repository)+" && git commit -m test", worktree)
+	if result.Decision != Review || !hasRule(result, "git-dynamic-working-directory") {
+		t.Fatalf("pushd main checkout commit: got %s findings=%+v", result.Decision, result.Findings)
+	}
+	for _, command := range []string{
+		"commit_changes() { git commit -m test; }; cd " + posixLiteral(repository) + " && commit_changes",
+		"if true; then commit_changes() { git commit -m test; }; fi; cd " + posixLiteral(repository) + " && commit_changes",
+		"change_directory() { cd " + posixLiteral(repository) + "; }; change_directory; git commit -m test",
+		"source ./changes-directory.sh; git commit -m test",
+	} {
+		result = analyzePOSIX(command, worktree)
+		if result.Decision != Review || !hasRule(result, "git-dynamic-working-directory") {
+			t.Fatalf("function commit uses invocation cwd: %q got %s findings=%+v", command, result.Decision, result.Findings)
 		}
 	}
 }

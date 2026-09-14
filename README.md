@@ -417,6 +417,31 @@ rules already provide, and an unknown or non-suppressible `rule_id` is a
 configuration error rather than a silently ignored entry. A `block` decision is
 never suppressed.
 
+### Trusting reviewed osascript files
+
+A reviewed AppleScript file can be allowed without bypassing analysis of the
+rest of the shell input. Configure only the exact active files the agent may
+execute but must not edit:
+
+```toml
+[macos]
+trusted_osascript_files = [
+  "~/.claude/scripts/mail/search-by-subject.applescript",
+  "~/.claude/scripts/calendar/get-today-events.applescript",
+]
+```
+
+A literal path to one of these regular files is allowed through `osascript`.
+Inline `-e` programs, stdin programs, alternate `-l` interpreters, dynamic
+script paths, and all other files remain blocked. Commands composed around the
+invocation are still analyzed, so a dangerous command after the script is not
+hidden by the exception.
+
+The configured files become protected write targets for both shell and direct
+file operations. Keep the editable source elsewhere, review it, and deploy it
+through a managed path such as chezmoi. Relative paths are resolved from the
+configuration file's directory, and `~/` is supported.
+
 ### Blocking GitHub pull request creation
 
 Pull request creation can be blocked for exact GitHub repository identities.
@@ -441,7 +466,8 @@ blocks these GitHub CLI creation paths:
   because an agent task produces a pull request
 - `gh stack submit`
 - a mutating `gh api repos/OWNER/REPOSITORY/pulls` REST request
-- an inline GraphQL mutation containing `createPullRequest`
+- a GraphQL mutation containing `createPullRequest`, whether inline or loaded
+  from a regular query file
 
 The target is resolved, in order, from `-R`/`--repo`, inherited or literal
 `GH_REPO` and `GH_HOST` assignments, and Git remotes in the current checkout.
@@ -451,19 +477,23 @@ checkout paths in the configuration. If any possible remote matches a configured
 identity, creation is blocked. A direct creation command whose target is
 unresolved also fails closed while the block list is nonempty.
 
-Read-only PR commands, recognized help invocations, and supported `--dry-run` modes remain allowed. This policy is
-independent of the Git branch policy: it does not block local `git merge` or
-`git push`, and it does not change a configured protected-branch exception.
+Read-only PR commands, recognized help invocations, `gh extension list`, and
+supported `--dry-run` modes remain allowed. This policy is independent of the
+Git branch policy: it does not block local `git merge` or `git push`, and it
+does not change a configured protected-branch exception.
 
 The policy is deliberately conservative around indirection. An unknown `gh`
-alias or extension is blocked when its resolved checkout is configured—or cannot
-be resolved—because its expansion may create a pull request. Changes to a remote
-or default repository before a creation command make that target unresolved. A
-mutating `gh api` call with a dynamic endpoint, or a GraphQL mutation loaded
-dynamically, is also blocked. GraphQL's
-`createPullRequest` identifies a repository by node ID, which cannot be matched
-to `OWNER/REPOSITORY` offline, so an explicit inline mutation is blocked whenever
-at least one repository block is configured.
+alias or custom root command is blocked when its resolved checkout is
+configured—or cannot be resolved—because its expansion may create a pull
+request. `gh extension exec` is treated the same way. Changes to a remote or
+default repository before a creation command make that target unresolved. A
+mutating `gh api` call with a dynamic endpoint requires `review`. A GraphQL
+query supplied as `query=@file` is inspected when the file is regular, valid
+UTF-8, and no larger than 1 MiB; an unreadable or otherwise unresolved query
+also requires `review` and is therefore denied by hosts without interactive
+review. GraphQL's `createPullRequest` identifies a repository by node ID,
+which cannot be matched to `OWNER/REPOSITORY` offline, so an explicit mutation
+is blocked whenever at least one repository block is configured.
 
 This remains command-line policy rather than an authorization boundary. A
 browser, MCP tool, custom executable, or allowed interpreter can create a pull
@@ -507,48 +537,37 @@ tree, so a subdirectory and `git -C` work while another checkout or worktree
 does not inherit the exception. Existing symbolic links are resolved when the
 configuration is loaded; a link created afterward fails closed.
 
-The exception applies only to one direct, literal Git invocation. Commits may
-use ordinary commit arguments (including `--amend`) but not `--no-verify`.
-Protected pushes must name the configured remote and the same source and target
-branch explicitly, for example `git push origin main`, `main:main`, or the
-equivalent full `refs/heads/` form. Bare pushes, push options, force variants,
-deletion, bulk or mirror pushes, multiple refspecs, `HEAD:main`, shell command
-composition, substitutions, wrappers, redirections, and environment or Git
-configuration overrides do not receive the exception. These constraints are
-built in and cannot be relaxed by fields in the structured entry.
-
-A matching structured exception still requires one direct, standalone Git
-invocation. This is allowed:
+On POSIX shells, each direct, literal Git invocation is checked independently.
+Composition, pipelines, and redirections therefore keep the exception only for
+the Git operation that matches it, while every neighboring command and write
+target keeps its normal policy:
 
 ```sh
-git push origin main
-```
-
-Combining the same protected operation with another command is blocked with an
-actionable `protected-branch-exception-*` diagnostic:
-
-```sh
+git commit -m "wip $(date +%F)" 2>&1 | tail -5
 git push origin main && git status
 ```
 
-Run the protected operation and follow-up checks as separate tool calls instead:
+A quoted command substitution used as the single value of `-m` is accepted
+because it cannot turn into another Git option; the command inside the
+substitution is still analyzed independently. An unquoted dynamic argument,
+`--no-verify` (including abbreviated forms), wrappers, subshells, prefix
+assignments, environment overrides, and Git configuration overrides other than
+exactly `-c commit.gpgsign=false` do not receive the exception. A literal
+`cd /path && git ...` is followed on its success path, so
+the branch is checked in the selected checkout rather than the caller's
+checkout. Ambiguous working-directory changes remain `review`.
 
-```sh
-git push origin main
-```
+Protected pushes must name the configured remote and the same source and target
+branch explicitly, for example `git push origin main`, `main:main`, or the
+equivalent full `refs/heads/` form. Bare pushes, push options, force variants,
+deletion, bulk or mirror pushes, multiple refspecs, and `HEAD:main` remain
+blocked. A wrong repository, branch, remote, or unsafe Git argument receives the
+usual protected-branch rule; an unsafe neighboring command can still raise the
+overall result to `block`.
 
-```sh
-git fetch origin
-git rev-parse HEAD
-git rev-parse origin/main
-git status --short --branch
-```
-
-The diagnostic distinguishes compound commands, pipelines, redirections, and
-indirect invocation through wrappers, subshells, or assignments. A wrong
-repository, branch, remote, or an unsafe Git argument still receives the usual
-protected-branch rule because splitting the shell command would not make that
-operation eligible.
+PowerShell structured exceptions remain limited to one standalone invocation;
+compound, pipeline, redirection, and indirect forms retain their actionable
+`protected-branch-exception-*` diagnostics.
 
 ## Development
 

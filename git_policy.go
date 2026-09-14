@@ -202,21 +202,25 @@ func safeProtectedCommitArguments(args []string, known []bool) bool {
 		return false
 	}
 	for _, arg := range args {
-		option := strings.SplitN(arg, "=", 2)[0]
-		// Git accepts unambiguous abbreviations, so "--no-ver" disables the
-		// hooks just as "--no-verify" does. The prefix test therefore has to
-		// run in this direction, but it only describes a long option: a bare
-		// "-" is the stdin placeholder in "commit -F -", and "--" ends the
-		// option list. Neither abbreviates --no-verify, so requiring a leading
-		// "--" plus at least one more character keeps them out.
-		if strings.HasPrefix(option, "--") && len(option) > 2 && strings.HasPrefix("--no-verify", option) {
-			return false
-		}
-		if strings.HasPrefix(arg, "-") && !strings.HasPrefix(arg, "--") && strings.Contains(arg[1:], "n") {
+		if protectedCommitArgumentDisablesHooks(arg) {
 			return false
 		}
 	}
 	return true
+}
+
+func protectedCommitArgumentDisablesHooks(arg string) bool {
+	option := strings.SplitN(arg, "=", 2)[0]
+	// Git accepts unambiguous abbreviations, so "--no-ver" disables the
+	// hooks just as "--no-verify" does. The prefix test therefore has to
+	// run in this direction, but it only describes a long option: a bare
+	// "-" is the stdin placeholder in "commit -F -", and "--" ends the
+	// option list. Neither abbreviates --no-verify, so requiring a leading
+	// "--" plus at least one more character keeps them out.
+	if strings.HasPrefix(option, "--") && len(option) > 2 && strings.HasPrefix("--no-verify", option) {
+		return true
+	}
+	return strings.HasPrefix(arg, "-") && !strings.HasPrefix(arg, "--") && strings.Contains(arg[1:], "n")
 }
 
 func safeGitGlobalsForException(args []string, known []bool) bool {
@@ -231,6 +235,13 @@ func safeGitGlobalsForException(args []string, known []bool) bool {
 			args, known = args[2:], known[2:]
 			continue
 		}
+		if args[0] == "-c" {
+			if len(args) < 2 || len(known) < 2 || !known[1] || !safeGitConfigOverrideForException(args[1]) {
+				return false
+			}
+			args, known = args[2:], known[2:]
+			continue
+		}
 		if strings.HasPrefix(args[0], "-C") && len(args[0]) > 2 {
 			args, known = args[1:], known[1:]
 			continue
@@ -240,8 +251,12 @@ func safeGitGlobalsForException(args []string, known []bool) bool {
 	return false
 }
 
+func safeGitConfigOverrideForException(override string) bool {
+	return strings.EqualFold(override, "commit.gpgsign=false")
+}
+
 func exactProtectedPush(parsed gitPushArgs, branch string) bool {
-	if parsed.hasOptions || parsed.repositoryOption || len(parsed.refspecs) != 1 {
+	if parsed.exceptionUnsafeOptions || parsed.repositoryOption || len(parsed.refspecs) != 1 {
 		return false
 	}
 	source, target, ok := exactPushBranches(parsed.refspecs[0])

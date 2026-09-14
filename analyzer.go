@@ -41,7 +41,15 @@ type analyzer struct {
 	protectedBranches                []string
 	protectedBranchExceptions        []GitProtectedBranchException
 	protectedGitExceptionEligibility protectedGitExceptionEligibility
+	protectedCommitArgumentsSafe     bool
+	protectedCommitArgumentsChecked  bool
+	posixContexts                    posixSourceContexts
+	commandCWD                       string
+	commandCWDKnown                  bool
+	commandCWDSet                    bool
 	githubPullRequestCreateBlocks    []GitHubPullRequestCreateBlock
+	trustedOSAScriptFiles            []string
+	resolvedTrustedOSAScriptFiles    []string
 	githubRepositoryOverride         *wordValue
 	githubHostOverride               *wordValue
 	githubPossibleCWDs               []string
@@ -87,6 +95,8 @@ func AnalyzeWithConfigAndShell(command, cwd string, config Config, shell ShellDi
 		protectedBranches:             config.Git.ProtectedBranches,
 		protectedBranchExceptions:     config.Git.ProtectedBranchExceptions,
 		githubPullRequestCreateBlocks: config.GitHub.PullRequestCreateBlocks,
+		trustedOSAScriptFiles:         config.MacOS.TrustedOSAScriptFiles,
+		resolvedTrustedOSAScriptFiles: config.MacOS.resolvedTrustedOSAScriptFiles,
 		githubRepositoryOverride:      inheritedGitHubEnvironmentOverride("GH_REPO"),
 		githubHostOverride:            inheritedGitHubEnvironmentOverride("GH_HOST"),
 		suppressions:                  config.Suppressions,
@@ -119,9 +129,6 @@ func (a *analyzer) analyzePOSIXSource(source string, depth int) {
 		}
 		return
 	}
-	previousEligibility := a.protectedGitExceptionEligibility
-	a.protectedGitExceptionEligibility = eligiblePOSIXProtectedGitException(file, depth, a.home)
-	defer func() { a.protectedGitExceptionEligibility = previousEligibility }()
 	previousRepositoryOverride := a.githubRepositoryOverride
 	previousHostOverride := a.githubHostOverride
 	previousShellVariables := a.githubShellVariables
@@ -150,6 +157,13 @@ func (a *analyzer) analyzePOSIXSource(source string, depth int) {
 		a.assignments = previousAssignments
 		a.assignedNames = previousAssignedNames
 	}()
+	previousContexts := a.posixContexts
+	baseCWD, baseCWDKnown := a.cwd, true
+	if a.commandCWDSet {
+		baseCWD, baseCWDKnown = a.commandCWD, a.commandCWDKnown
+	}
+	a.posixContexts = buildPOSIXContexts(file, depth, baseCWD, baseCWDKnown, a.home, a.assignments)
+	defer func() { a.posixContexts = previousContexts }()
 	var inspect func(node syntax.Node) bool
 	inspect = func(node syntax.Node) bool {
 		switch node := node.(type) {
@@ -248,52 +262,6 @@ func (a *analyzer) inspectForCandidates(clause *syntax.ForClause, inspect func(s
 	return true
 }
 
-func eligiblePOSIXProtectedGitException(file *syntax.File, depth int, home string) protectedGitExceptionEligibility {
-	if depth != 0 {
-		return protectedGitExceptionEligibility{Reason: protectedGitExceptionIndirect}
-	}
-	if len(file.Stmts) != 1 {
-		return protectedGitExceptionEligibility{Reason: protectedGitExceptionCompoundCommand}
-	}
-	statement := file.Stmts[0]
-	if binary, ok := statement.Cmd.(*syntax.BinaryCmd); ok {
-		switch binary.Op {
-		case syntax.Pipe, syntax.PipeAll:
-			return protectedGitExceptionEligibility{Reason: protectedGitExceptionPipeline}
-		default:
-			return protectedGitExceptionEligibility{Reason: protectedGitExceptionCompoundCommand}
-		}
-	}
-	if len(statement.Redirs) > 0 {
-		return protectedGitExceptionEligibility{Reason: protectedGitExceptionRedirection}
-	}
-	if statement.Negated || statement.Background || statement.Coprocess {
-		return protectedGitExceptionEligibility{Reason: protectedGitExceptionIndirect}
-	}
-	call, ok := statement.Cmd.(*syntax.CallExpr)
-	if !ok || len(call.Assigns) > 0 || len(call.Args) == 0 {
-		return protectedGitExceptionEligibility{Reason: protectedGitExceptionIndirect}
-	}
-	command := evalWord(call.Args[0], home, nil)
-	if !command.Known {
-		return protectedGitExceptionEligibility{}
-	}
-	if normalizeCommandName(command.Value) != "git" {
-		return protectedGitExceptionEligibility{Reason: protectedGitExceptionIndirect}
-	}
-	callCount := 0
-	syntax.Walk(file, func(node syntax.Node) bool {
-		if _, ok := node.(*syntax.CallExpr); ok {
-			callCount++
-		}
-		return true
-	})
-	if callCount != 1 {
-		return protectedGitExceptionEligibility{Reason: protectedGitExceptionIndirect}
-	}
-	return protectedGitExceptionEligibility{Eligible: true, Reason: protectedGitExceptionEligible}
-}
-
 // "export FOO=bar" is a declaration rather than a call, so it never reaches
 // inspectCommand. "declare", "local", "readonly", and "typeset" parse the same
 // way; only "export" reaches beyond the current shell.
@@ -374,6 +342,33 @@ func (a *analyzer) inspectEnvAssignments(args []string, known []bool) {
 }
 
 func (a *analyzer) inspectPOSIXCall(call *syntax.CallExpr, depth int) {
+	previousEligibility := a.protectedGitExceptionEligibility
+	previousCommitSafe := a.protectedCommitArgumentsSafe
+	previousCommitChecked := a.protectedCommitArgumentsChecked
+	previousCommandCWD := a.commandCWD
+	previousCommandCWDKnown := a.commandCWDKnown
+	previousCommandCWDSet := a.commandCWDSet
+	if context, ok := a.posixContexts.calls[call]; ok {
+		a.protectedGitExceptionEligibility = context.protectedGitExceptionEligibility
+		a.protectedCommitArgumentsSafe = context.protectedCommitArgumentsSafe
+		a.protectedCommitArgumentsChecked = context.protectedCommitArgumentsChecked
+		a.commandCWD = context.cwd
+		a.commandCWDKnown = context.cwdKnown
+		a.commandCWDSet = true
+	} else {
+		a.protectedGitExceptionEligibility = protectedGitExceptionEligibility{Reason: protectedGitExceptionIndirect}
+		a.protectedCommitArgumentsChecked = false
+		a.commandCWDKnown = false
+		a.commandCWDSet = true
+	}
+	defer func() {
+		a.protectedGitExceptionEligibility = previousEligibility
+		a.protectedCommitArgumentsSafe = previousCommitSafe
+		a.protectedCommitArgumentsChecked = previousCommitChecked
+		a.commandCWD = previousCommandCWD
+		a.commandCWDKnown = previousCommandCWDKnown
+		a.commandCWDSet = previousCommandCWDSet
+	}()
 	for _, assign := range call.Assigns {
 		a.inspectAssign(assign, "assignment")
 	}
@@ -544,7 +539,11 @@ func (a *analyzer) inspectCommand(argv []string, known []bool, depth int) {
 		if !networksetupReadsOnly(args, argKnown) {
 			a.add(Block, "sensitive-system-command", command, "")
 		}
-	case "osascript", "security", "screencapture":
+	case "osascript":
+		if !a.trustedOSAScriptInvocation(args, argKnown) {
+			a.add(Block, "sensitive-system-command", command, "")
+		}
+	case "security", "screencapture":
 		a.add(Block, "sensitive-system-command", command, "")
 	case "diskutil":
 		if diskutilDestroys(args, argKnown) {
@@ -789,10 +788,59 @@ func (a *analyzer) inspectSymlink(args []string, known []bool) {
 }
 
 func (a *analyzer) inspectSensitiveReadArgs(command string, args []string, known []bool) {
+	patternIndex := -1
+	if command == "grep" {
+		patternIndex = grepPositionalPatternIndex(args, known)
+	}
 	for i, arg := range args {
-		if i < len(known) && known[i] && a.sensitiveReadPath(arg) {
+		if i != patternIndex && i < len(known) && known[i] && a.sensitiveReadPath(arg) {
 			a.add(Block, "sensitive-shell-read", command, a.normalizePath(arg))
 		}
+	}
+}
+
+func grepPositionalPatternIndex(args []string, known []bool) int {
+	for i, arg := range args {
+		if i >= len(known) || !known[i] {
+			continue
+		}
+		if arg == "-e" || arg == "--regexp" || arg == "-f" || arg == "--file" || arg == "--exclude-from" ||
+			strings.HasPrefix(arg, "-e") && len(arg) > 2 || strings.HasPrefix(arg, "-f") && len(arg) > 2 ||
+			strings.HasPrefix(arg, "--regexp=") || strings.HasPrefix(arg, "--file=") || strings.HasPrefix(arg, "--exclude-from=") {
+			return -1
+		}
+	}
+
+	endOptions := false
+	for i := 0; i < len(args); i++ {
+		if i >= len(known) || !known[i] {
+			return -1
+		}
+		arg := args[i]
+		if !endOptions && arg == "--" {
+			endOptions = true
+			continue
+		}
+		if !endOptions && grepOptionTakesValue(arg) {
+			i++
+			continue
+		}
+		if !endOptions && strings.HasPrefix(arg, "-") && arg != "-" {
+			continue
+		}
+		return i
+	}
+	return -1
+}
+
+func grepOptionTakesValue(arg string) bool {
+	switch arg {
+	case "-A", "--after-context", "-B", "--before-context", "-C", "--context", "-D", "--devices",
+		"-d", "--directories", "-m", "--max-count", "--binary-files", "--exclude",
+		"--exclude-dir", "--include", "--label":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -1264,8 +1312,13 @@ func literalWords(words []*syntax.Word, home string, assignments map[string]stri
 }
 
 func (a *analyzer) inspectGit(args []string, known []bool) {
+	baseCWD, baseCWDKnown := a.cwd, true
+	if a.commandCWDSet {
+		baseCWD, baseCWDKnown = a.commandCWD, a.commandCWDKnown
+	}
 	globalsSafeForException := safeGitGlobalsForException(args, known)
-	args, known, gitCWD, cwdKnown := stripGitGlobals(args, known, a.cwd)
+	args, known, gitCWD, cwdKnown := stripGitGlobals(args, known, baseCWD)
+	cwdKnown = cwdKnown && baseCWDKnown
 	if len(args) == 0 || !known[0] {
 		return
 	}
@@ -1307,7 +1360,11 @@ func (a *analyzer) inspectGit(args []string, known []bool) {
 			return
 		}
 		if branch := currentBranch(gitCWD); a.protectedBranch(branch, gitCWD) {
-			if !globalsSafeForException || !safeProtectedCommitArguments(rest, restKnown) {
+			argumentsSafe := safeProtectedCommitArguments(rest, restKnown)
+			if a.protectedCommitArgumentsChecked {
+				argumentsSafe = a.protectedCommitArgumentsSafe
+			}
+			if !globalsSafeForException || !argumentsSafe {
 				a.add(Block, "protected-branch-direct-commit", "git", branch)
 				return
 			}
@@ -1417,11 +1474,11 @@ func hasForcedRefspec(refspecs []string) bool {
 }
 
 type gitPushArgs struct {
-	remote           string
-	refspecs         []string
-	bulk             bool
-	hasOptions       bool
-	repositoryOption bool
+	remote                 string
+	refspecs               []string
+	bulk                   bool
+	exceptionUnsafeOptions bool
+	repositoryOption       bool
 }
 
 func parseGitPushArgs(args []string) gitPushArgs {
@@ -1432,18 +1489,18 @@ func parseGitPushArgs(args []string) gitPushArgs {
 		arg := args[i]
 		if !endOptions && arg == "--" {
 			endOptions = true
-			result.hasOptions = true
+			result.exceptionUnsafeOptions = true
 			continue
 		}
 		if !endOptions {
 			if arg == "--all" || arg == "--mirror" {
 				result.bulk = true
-				result.hasOptions = true
+				result.exceptionUnsafeOptions = true
 				return result
 			}
 			if arg == "--repo" {
 				result.repositoryOption = true
-				result.hasOptions = true
+				result.exceptionUnsafeOptions = true
 				if i+1 < len(args) {
 					i++
 				}
@@ -1451,18 +1508,20 @@ func parseGitPushArgs(args []string) gitPushArgs {
 			}
 			if strings.HasPrefix(arg, "--repo=") {
 				result.repositoryOption = true
-				result.hasOptions = true
+				result.exceptionUnsafeOptions = true
 				continue
 			}
 			if pushOptionTakesValue(arg) {
-				result.hasOptions = true
+				result.exceptionUnsafeOptions = true
 				if i+1 < len(args) {
 					i++
 				}
 				continue
 			}
 			if strings.HasPrefix(arg, "-") {
-				result.hasOptions = true
+				if arg != "-q" && arg != "--quiet" {
+					result.exceptionUnsafeOptions = true
+				}
 				continue
 			}
 		}
@@ -1552,6 +1611,20 @@ func (a *analyzer) protectedBranch(branch, gitCWD string) bool {
 }
 
 func (a *analyzer) inspectRedirect(redir *syntax.Redirect) {
+	previousCommandCWD := a.commandCWD
+	previousCommandCWDKnown := a.commandCWDKnown
+	previousCommandCWDSet := a.commandCWDSet
+	if context, ok := a.posixContexts.redirects[redir]; ok {
+		a.commandCWD = context.cwd
+		a.commandCWDKnown = context.cwdKnown
+		a.commandCWDSet = true
+	}
+	defer func() {
+		a.commandCWD = previousCommandCWD
+		a.commandCWDKnown = previousCommandCWDKnown
+		a.commandCWDSet = previousCommandCWDSet
+	}()
+
 	switch redir.Op {
 	case syntax.RdrIn, syntax.RdrInOut:
 		word := evalWord(redir.Word, a.home, a.assignments)
@@ -1565,6 +1638,7 @@ func (a *analyzer) inspectRedirect(redir *syntax.Redirect) {
 	}
 	word := evalWord(redir.Word, a.home, a.assignments)
 	if !word.Known {
+		a.add(Review, "dynamic-protected-write", "redirect", "dynamic")
 		return
 	}
 	if isDevicePath(word.Value) {
@@ -1814,12 +1888,22 @@ func (a *analyzer) normalizePath(path string) string {
 		path = filepath.Join(a.home, path[2:])
 	}
 	if !filepath.IsAbs(path) {
-		path = filepath.Join(a.cwd, path)
+		cwd := a.cwd
+		if a.commandCWDSet && a.commandCWDKnown {
+			cwd = a.commandCWD
+		}
+		path = filepath.Join(cwd, path)
 	}
 	return filepath.Clean(path)
 }
 
 func (a *analyzer) protectedPath(path string) bool {
+	cwdRelative := !filepath.IsAbs(path) && path != "~" && !strings.HasPrefix(path, "~/") &&
+		!(a.shell == ShellPowerShell && strings.HasPrefix(path, `~\`))
+	if cwdRelative && a.commandCWDSet && !a.commandCWDKnown {
+		a.add(Review, "dynamic-protected-write", "path", "dynamic")
+		return false
+	}
 	normalized := a.normalizePath(path)
 	resolved := resolvePathSymlinks(normalized)
 	protected := []string{
@@ -1827,6 +1911,8 @@ func (a *analyzer) protectedPath(path string) bool {
 		filepath.Join(a.home, ".aws"), filepath.Join(a.home, ".azure"),
 		filepath.Join(a.home, ".gcloud"),
 	}
+	protected = append(protected, a.trustedOSAScriptFiles...)
+	protected = append(protected, a.resolvedTrustedOSAScriptFiles...)
 	// Agent control roots are shared with the direct file policy so that a shell
 	// redirection cannot reach a path that Write/Edit refuses. The skill trees
 	// are carved out of both for the same reason, which keeps the two in step.
@@ -2095,10 +2181,15 @@ func hasDryRunFlag(args []string) bool {
 }
 
 func hasUnsafeForce(args []string) bool {
-	if containsAny(args, "--force-with-lease") {
-		return false
+	for _, arg := range args {
+		if arg == "--force-with-lease" || strings.HasPrefix(arg, "--force-with-lease=") {
+			continue
+		}
+		if arg == "--force" || strings.HasPrefix(arg, "-") && !strings.HasPrefix(arg, "--") && strings.Contains(arg[1:], "f") {
+			return true
+		}
 	}
-	return hasForceFlag(args)
+	return false
 }
 
 func curlUploadsFile(args []string) bool {
@@ -2123,7 +2214,7 @@ func isSigningKey(path string) bool {
 
 func isSecretBasename(base string) bool {
 	lower := strings.ToLower(base)
-	if lower == ".env" || strings.HasPrefix(lower, ".env.") || lower == ".env.keys" {
+	if dotenvBasename(lower) {
 		return true
 	}
 	if lower == "id_rsa" || lower == "id_ed25519" || lower == "id_ecdsa" || lower == "id_dsa" {

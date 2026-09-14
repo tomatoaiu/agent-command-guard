@@ -31,10 +31,12 @@ func AnalyzeFile(operation FileOperation, path, cwd string, config Config) Resul
 	}
 
 	a := &analyzer{
-		cwd:      filepath.Clean(cwd),
-		home:     userHomeDir(),
-		shell:    ShellAuto.resolved(),
-		language: config.Output.Language,
+		cwd:                           filepath.Clean(cwd),
+		home:                          userHomeDir(),
+		shell:                         ShellAuto.resolved(),
+		language:                      config.Output.Language,
+		trustedOSAScriptFiles:         config.MacOS.TrustedOSAScriptFiles,
+		resolvedTrustedOSAScriptFiles: config.MacOS.resolvedTrustedOSAScriptFiles,
 	}
 	if !validToolPath(path) {
 		a.add(Block, "invalid-file-path", string(operation), "")
@@ -256,7 +258,9 @@ func reviewCredentialPaths(home string) []string {
 }
 
 func protectedFileWriteRoots(a *analyzer) []string {
-	return agentControlRoots(a.home)
+	roots := agentControlRoots(a.home)
+	roots = append(roots, a.trustedOSAScriptFiles...)
+	return append(roots, a.resolvedTrustedOSAScriptFiles...)
 }
 
 func pathMatchesRoot(path, root string) bool {
