@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/tomatoaiu/agent-command-guard/compare/v0.9.0...v0.10.0) (2026-09-14)
+
+
+### Features
+
+* reduce false positives without weakening guardrails ([#60](https://github.com/tomatoaiu/agent-command-guard/issues/60)) ([699b8e8](https://github.com/tomatoaiu/agent-command-guard/commit/699b8e80227de5650d87f5235954c2b5b2a5b91d))
+
 ## [0.9.0](https://github.com/tomatoaiu/agent-command-guard/compare/v0.8.0...v0.9.0) (2026-08-24)
 
 
