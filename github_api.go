@@ -1,8 +1,12 @@
 package main
 
 import (
+	"io"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
+	"unicode/utf8"
 )
 
 type ghAPIInvocation struct {
@@ -22,7 +26,7 @@ type ghAPIInvocation struct {
 
 func (a *analyzer) inspectGitHubAPI(args []string, known []bool) {
 	defaultHost, hostKnown := a.defaultGitHubHost()
-	invocation := parseGhAPIInvocation(args, known, defaultHost, hostKnown)
+	invocation := a.parseGhAPIInvocation(args, known, defaultHost, hostKnown)
 	if invocation.help {
 		return
 	}
@@ -39,7 +43,7 @@ func (a *analyzer) inspectGitHubAPI(args []string, known []bool) {
 		return
 	}
 	if !invocation.endpointSeen || !invocation.endpointKnown {
-		a.add(Block, "github-pull-request-operation-unknown", "gh", "dynamic API endpoint")
+		a.add(Review, "github-pull-request-operation-unknown", "gh", "dynamic API endpoint")
 		return
 	}
 
@@ -70,7 +74,7 @@ func (a *analyzer) inspectGitHubAPI(args []string, known []bool) {
 			}
 		}
 		if invocation.queryUnresolved || invocation.hasInput {
-			a.add(Block, "github-pull-request-operation-unknown", "gh", "dynamic GraphQL mutation")
+			a.add(Review, "github-pull-request-operation-unknown", "gh", "dynamic GraphQL mutation")
 		}
 	}
 }
@@ -87,7 +91,7 @@ func definitelyReadOnlyHTTPMethod(method string, known bool) bool {
 	}
 }
 
-func parseGhAPIInvocation(args []string, known []bool, defaultHost string, defaultHostKnown bool) ghAPIInvocation {
+func (a *analyzer) parseGhAPIInvocation(args []string, known []bool, defaultHost string, defaultHostKnown bool) ghAPIInvocation {
 	invocation := ghAPIInvocation{host: defaultHost, hostKnown: defaultHostKnown, methodKnown: true}
 	endOptions := false
 	for i := 0; i < len(args); i++ {
@@ -136,7 +140,7 @@ func parseGhAPIInvocation(args []string, known []bool, defaultHost string, defau
 			case ghAPIFieldFlag(arg):
 				value, valueKnown := ghAPIFieldValue(arg, args, known, &i)
 				invocation.hasFields = true
-				if query, ok := githubAPIQueryField(value, valueKnown); ok {
+				if query, ok := a.githubAPIQueryField(value, valueKnown); ok {
 					invocation.queries = append(invocation.queries, query)
 					invocation.queryUnresolved = invocation.queryUnresolved || !query.Known
 				}
@@ -166,10 +170,10 @@ func parseGhAPIInvocation(args []string, known []bool, defaultHost string, defau
 
 func nextGhArgument(args []string, known []bool, index *int) (string, bool) {
 	(*index)++
-	if *index >= len(args) || *index >= len(known) || !known[*index] {
+	if *index >= len(args) || *index >= len(known) {
 		return "", false
 	}
-	return args[*index], true
+	return args[*index], known[*index]
 }
 
 func ghAPIFieldFlag(arg string) bool {
@@ -200,7 +204,7 @@ func ghAPIOptionTakesValue(arg string) bool {
 	}
 }
 
-func githubAPIQueryField(value string, known bool) (wordValue, bool) {
+func (a *analyzer) githubAPIQueryField(value string, known bool) (wordValue, bool) {
 	if !known {
 		return wordValue{Known: false}, true
 	}
@@ -208,10 +212,50 @@ func githubAPIQueryField(value string, known bool) (wordValue, bool) {
 	if !ok || name != "query" {
 		return wordValue{}, false
 	}
-	if strings.HasPrefix(query, "@") {
+	if !strings.HasPrefix(query, "@") {
+		return wordValue{Value: query, Known: true}, true
+	}
+	path := strings.TrimPrefix(query, "@")
+	cwd := a.cwd
+	if a.commandCWDSet {
+		if !a.commandCWDKnown {
+			return wordValue{Known: false}, true
+		}
+		cwd = a.commandCWD
+	}
+	if path == "~" {
+		path = a.home
+	} else if strings.HasPrefix(path, "~/") {
+		path = filepath.Join(a.home, path[2:])
+	} else if !filepath.IsAbs(path) {
+		path = filepath.Join(cwd, path)
+	}
+	path = filepath.Clean(path)
+	if a.sensitiveReadPath(path) {
+		a.add(Block, "sensitive-shell-read", "gh", path)
 		return wordValue{Known: false}, true
 	}
-	return wordValue{Value: query, Known: true}, true
+	query, ok = readGraphQLQueryFile(path)
+	return wordValue{Value: query, Known: ok}, true
+}
+
+const maxGraphQLQueryBytes = 1 << 20
+
+func readGraphQLQueryFile(path string) (string, bool) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", false
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Size() > maxGraphQLQueryBytes {
+		return "", false
+	}
+	contents, err := io.ReadAll(io.LimitReader(file, maxGraphQLQueryBytes+1))
+	if err != nil || len(contents) > maxGraphQLQueryBytes || !utf8.Valid(contents) {
+		return "", false
+	}
+	return string(contents), true
 }
 
 func gitHubPullRequestEndpoint(endpoint, defaultHost string, hostKnown bool) (githubRepositoryIdentity, bool, bool, bool) {

@@ -45,6 +45,11 @@ func (a *analyzer) inspectGitHub(args []string, known []bool) {
 		if verb == "submit" && !ghInvocationIsDryRun(args, known) {
 			a.blockGitHubPullRequestTarget(args, known)
 		}
+	case "extension":
+		verb, _, verbKnown := ghSubcommand(args, known, index+1)
+		if !verbKnown || verb == "exec" {
+			a.blockUnknownGitHubPullRequestOperation(args, known)
+		}
 	case "api":
 		a.inspectGitHubAPI(args[index+1:], known[index+1:])
 	default:
@@ -133,7 +138,7 @@ func knownPullRequestCreatingGitHubRoot(command string) bool {
 func knownGitHubRootCommand(command string) bool {
 	switch command {
 	case "alias", "api", "attestation", "auth", "browse", "cache", "codespace", "completion", "config",
-		"discussion", "gist", "gpg-key", "help", "issue", "label", "licenses", "org", "pr", "project",
+		"discussion", "extension", "gist", "gpg-key", "help", "issue", "label", "licenses", "org", "pr", "project",
 		"release", "repo", "ruleset", "run", "search", "secret", "skill", "ssh-key", "status", "variable",
 		"version", "workflow":
 		return true

@@ -33,6 +33,14 @@ func TestGitHubPullRequestCreateBlocks(t *testing.T) {
 	if err := config.prepare(t.TempDir()); err != nil {
 		t.Fatal(err)
 	}
+	queryFile := filepath.Join(t.TempDir(), "query.graphql")
+	if err := os.WriteFile(queryFile, []byte("query { viewer { login } }"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mutationFile := filepath.Join(t.TempDir(), "mutation.graphql")
+	if err := os.WriteFile(mutationFile, []byte("mutation { createPullRequest(input: {}) { pullRequest { id } } }"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	for _, test := range []struct {
 		name    string
@@ -81,6 +89,7 @@ func TestGitHubPullRequestCreateBlocks(t *testing.T) {
 		{"rest placeholders", "gh api repos/{owner}/{repo}/pulls -f title=test -f head=feature -f base=main", blockedRepository},
 		{"graphql mutation", `gh api graphql -f 'query=mutation { createPullRequest(input: $input) { pullRequest { id } } }'`, publicRepository},
 		{"graphql absolute URL", `gh api https://api.github.com/graphql -f 'query=mutation { createPullRequest(input: $input) { pullRequest { id } } }'`, publicRepository},
+		{"graphql mutation file", "gh api graphql -F query=@" + mutationFile, publicRepository},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			result := analyzePOSIXWithConfig(test.command, test.cwd, config)
@@ -97,6 +106,7 @@ func TestGitHubPullRequestCreateBlocks(t *testing.T) {
 	}{
 		{"view pull request", "gh pr view 1", blockedRepository},
 		{"core GitHub command", "gh issue list", blockedRepository},
+		{"extension list", "gh extension list", blockedRepository},
 		{"GitHub CLI version", "gh --version", blockedRepository},
 		{"command lookup", "command -v gh", blockedRepository},
 		{"create dry run", "gh pr create --dry-run --fill", blockedRepository},
@@ -107,6 +117,8 @@ func TestGitHubPullRequestCreateBlocks(t *testing.T) {
 		{"rest list pull requests", "gh api -X GET repos/" + blockedRepositoryName + "/pulls", publicRepository},
 		{"rest create issue", "gh api repos/" + blockedRepositoryName + "/issues -f title=test", publicRepository},
 		{"graphql query", `gh api graphql -f 'query=query { viewer { login } }'`, publicRepository},
+		{"graphql query file", "gh api graphql -F query=@" + queryFile, publicRepository},
+		{"graphql query file after cd", "cd " + posixLiteral(filepath.Dir(queryFile)) + " && gh api graphql -F query=@query.graphql", publicRepository},
 		{"dynamic GET endpoint", `gh api -X GET "$ENDPOINT"`, blockedRepository},
 		{"custom command in public repository", "gh dashboard", publicRepository},
 		{"local merge", "git merge feature", blockedRepository},
@@ -144,15 +156,32 @@ func TestGitHubPullRequestCreateBlockFailsClosedForUnknownOperation(t *testing.T
 	}{
 		{"custom alias or extension", "gh submit-pr", blockedRepository},
 		{"custom alias or extension help", "gh submit-pr --help", blockedRepository},
+		{"extension exec", "gh extension exec submit-pr", blockedRepository},
 		{"dynamic root command", `gh "$COMMAND"`, blockedRepository},
 		{"dynamic pull request operation", `gh pr "$ACTION"`, blockedRepository},
-		{"dynamic mutating REST endpoint", `gh api "$ENDPOINT" -f title=test`, publicRepository},
-		{"GraphQL input file", "gh api graphql -X POST --input payload.json", publicRepository},
-		{"GraphQL query file", "gh api graphql -F query=@mutation.graphql", publicRepository},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			result := analyzePOSIXWithConfig(test.command, test.cwd, config)
 			if result.Decision != Block || !hasRule(result, "github-pull-request-operation-unknown") {
+				t.Fatalf("got decision=%s findings=%+v", result.Decision, result.Findings)
+			}
+		})
+	}
+
+	for _, test := range []struct {
+		name    string
+		command string
+		cwd     string
+	}{
+		{"dynamic mutating REST endpoint", `gh api "$ENDPOINT" -f title=test`, publicRepository},
+		{"GraphQL input file", "gh api graphql -X POST --input payload.json", publicRepository},
+		{"missing GraphQL query file", "gh api graphql -F query=@missing.graphql", publicRepository},
+		{"GraphQL query with dynamic selection", `gh api graphql -f query="query{$FIELDS}"`, publicRepository},
+		{"GraphQL query with dynamic variable field", `gh api graphql -f 'query=query($n:Int!){repository(owner:"example",name:"public-tools"){issue(number:$n){id}}}' -F n=$NUMBER`, publicRepository},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result := analyzePOSIXWithConfig(test.command, test.cwd, config)
+			if result.Decision != Review || !hasRule(result, "github-pull-request-operation-unknown") {
 				t.Fatalf("got decision=%s findings=%+v", result.Decision, result.Findings)
 			}
 		})
