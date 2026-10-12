@@ -163,7 +163,7 @@ func sensitiveWriteBlocked(normalized, resolved string, a *analyzer) bool {
 		if skillWrite {
 			continue
 		}
-		for _, root := range protectedFileWriteRoots(a) {
+		for _, root := range protectedFileWriteRoots(a, normalized, resolved) {
 			if pathMatchesRoot(path, root) {
 				return true
 			}
@@ -257,8 +257,8 @@ func reviewCredentialPaths(home string) []string {
 	}
 }
 
-func protectedFileWriteRoots(a *analyzer) []string {
-	roots := agentControlRoots(a.home)
+func protectedFileWriteRoots(a *analyzer, normalized, resolved string) []string {
+	roots := agentControlRoots(a.home, piInstructionsPath(normalized, resolved, a.home))
 	roots = append(roots, a.trustedOSAScriptFiles...)
 	return append(roots, a.resolvedTrustedOSAScriptFiles...)
 }

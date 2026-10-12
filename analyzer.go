@@ -855,7 +855,7 @@ func (a *analyzer) inspectWriteTargets(command string, args []string, known []bo
 		indices = indices[len(indices)-1:]
 	}
 	for _, i := range indices {
-		if i < len(known) && known[i] && a.protectedPath(args[i]) {
+		if i < len(known) && known[i] && a.protectedWritePath(args[i]) {
 			a.add(Block, "guard-self-protection", command, a.normalizePath(args[i]))
 		}
 	}
@@ -1645,7 +1645,7 @@ func (a *analyzer) inspectRedirect(redir *syntax.Redirect) {
 		a.add(Block, "device-write", "redirect", word.Value)
 		return
 	}
-	if a.protectedPath(word.Value) {
+	if a.protectedWritePath(word.Value) {
 		a.add(Block, "protected-redirection", "redirect", a.normalizePath(word.Value))
 	}
 }
@@ -1898,6 +1898,16 @@ func (a *analyzer) normalizePath(path string) string {
 }
 
 func (a *analyzer) protectedPath(path string) bool {
+	return a.protectedTarget(path, false)
+}
+
+func (a *analyzer) protectedWritePath(path string) bool {
+	return a.protectedTarget(path, true)
+}
+
+// Content writes may edit Pi instructions. Deletion, permission changes, and
+// symlink operations retain the full control-path protection.
+func (a *analyzer) protectedTarget(path string, contentWrite bool) bool {
 	cwdRelative := !filepath.IsAbs(path) && path != "~" && !strings.HasPrefix(path, "~/") &&
 		!(a.shell == ShellPowerShell && strings.HasPrefix(path, `~\`))
 	if cwdRelative && a.commandCWDSet && !a.commandCWDKnown {
@@ -1917,7 +1927,8 @@ func (a *analyzer) protectedPath(path string) bool {
 	// redirection cannot reach a path that Write/Edit refuses. The skill trees
 	// are carved out of both for the same reason, which keeps the two in step.
 	if !agentSkillWrite(normalized, resolved, a.home) {
-		protected = append(protected, agentControlRoots(a.home)...)
+		piInstructionsWrite := contentWrite && piInstructionsPath(normalized, resolved, a.home)
+		protected = append(protected, agentControlRoots(a.home, piInstructionsWrite)...)
 	}
 	for _, root := range protected {
 		if pathWithin(normalized, root) || pathWithin(resolved, resolvePathSymlinks(root)) {

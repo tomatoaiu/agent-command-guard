@@ -62,25 +62,44 @@ func agentSkillWrite(normalized, resolved, home string) bool {
 	return false
 }
 
-// agentControlRoots returns the paths holding agent configuration, hooks, and
-// the guard itself. An agent must not rewrite its own controls, so the direct
-// file policy and the shell policy both consult this list. A single definition
-// keeps the two in step: a write that Write/Edit blocks cannot be performed
-// through a shell redirection instead.
-//
-// ~/.codex and ~/.pi/agent are taken whole. Their layouts are not known well
-// enough here to name a control surface inside them, and narrowing a protection
-// on a guess would open a hole rather than close a false positive. ~/.agents is
-// taken whole except for its skill tree, which agentSkillRoots names.
-func agentControlRoots(home string) []string {
+// piInstructionsPath recognizes the one Pi instruction file an agent may edit.
+// It does not accept directory descendants or links below home. Lstat also
+// catches dangling links that longest-existing-prefix resolution cannot follow.
+func piInstructionsPath(normalized, resolved, home string) bool {
+	if home == "" || !runtimePathEqual(normalized, filepath.Join(home, ".pi", "agent", "AGENTS.md")) ||
+		!runtimePathEqual(resolved, filepath.Join(resolvePathSymlinks(home), ".pi", "agent", "AGENTS.md")) {
+		return false
+	}
+	for path := normalized; !runtimePathEqual(path, filepath.Clean(home)); path = filepath.Dir(path) {
+		info, err := os.Lstat(path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil || info.Mode()&os.ModeSymlink != 0 {
+			return false
+		}
+		if path == normalized && !info.Mode().IsRegular() {
+			return false
+		}
+	}
+	return true
+}
+
+// agentControlRoots returns protected control paths. Only content-write callers
+// that verified piInstructionsPath may exclude Pi's root for that exact target.
+// Other controls, the guard itself, and non-write operations stay protected.
+// The skill-tree exception is handled separately by the callers.
+func agentControlRoots(home string, piInstructionsWrite bool) []string {
 	roots := []string{
 		filepath.Join(home, ".codex"),
-		filepath.Join(home, ".pi", "agent"),
 		filepath.Join(home, ".agents"),
 		// Not inside ~/.claude: it carries the user-scope MCP server
 		// definitions, and each of those is a command the agent runs.
 		filepath.Join(home, ".claude.json"),
 		filepath.Join(home, ".local", "bin", "agent-command-guard"),
+	}
+	if !piInstructionsWrite {
+		roots = append(roots, filepath.Join(home, ".pi", "agent"))
 	}
 	for _, entry := range claudeControlEntries {
 		roots = append(roots, filepath.Join(home, ".claude", entry))

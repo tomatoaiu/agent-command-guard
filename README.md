@@ -72,7 +72,17 @@ inside a skill directory, so a credential file or shell profile written there is
 blocked as it is anywhere else, and a symbolic link planted inside a skill tree
 does not carry the exclusion to its target.
 
-Three locations are deliberately not treated as leaving the workspace:
+Pi's user instructions at `~/.pi/agent/AGENTS.md` are also editable, through
+both direct file tools and shell writes. This exception names one file, not its
+parent directory or similarly named files. Symbolic links at that file or below
+home on its path, including dangling links, do not inherit the exception. The
+rest of `~/.pi/agent`, including credentials, settings, hooks, extensions, and
+subagent definitions, stays protected. Other protections and explicit file
+rules still apply, as do deletion, permission-change, and symlink-operation
+protections. Editing instructions can change the agent's behavior on a later
+turn; it does not directly change the guard's executable policy.
+
+Four locations are deliberately not treated as leaving the workspace:
 
 - A linked Git worktree of the same repository. A worktree lives outside the
   main working tree, so comparing paths alone would review every edit made while
@@ -84,6 +94,7 @@ Three locations are deliberately not treated as leaving the workspace:
   under `~/.claude/projects` remains protected.
 - The skill trees described above, for the same reason: an agent maintains them
   wherever it happens to be running.
+- The exact Pi instruction file described above, subject to the same link checks.
 
 The policy is intentionally conservative, but it is not a sandbox. It cannot
 prove that an allowed command is harmless, and a process can perform actions

@@ -42,14 +42,13 @@ func gitCommonDir(dir string) string {
 }
 
 // outsideWorkspace reports whether a write leaves the session's workspace.
-// Two locations count as inside it even though neither sits under the working
-// directory: a linked worktree of the same repository, and the agent's own
-// runtime area, which the agent maintains regardless of where it is running.
+// A linked worktree, the agent's runtime area, and Pi's fixed instruction file
+// count as inside it: the agent maintains them regardless of where it runs.
 func outsideWorkspace(normalized, resolved string, a *analyzer) bool {
 	if filePathWithin(resolved, resolvePathSymlinks(a.cwd)) {
 		return false
 	}
-	if agentRuntimePath(normalized, a.home) {
+	if piInstructionsPath(normalized, resolved, a.home) || agentRuntimePath(normalized, a.home) {
 		return false
 	}
 	return !inSameRepositoryWorktree(normalized, a.cwd)

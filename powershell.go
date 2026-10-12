@@ -275,7 +275,7 @@ func (a *analyzer) analyzePowerShellSource(source string, depth int) {
 			a.add(Review, "dynamic-protected-write", "redirect", "dynamic")
 			continue
 		}
-		if a.protectedPath(redirection.Target.Value) {
+		if a.protectedWritePath(redirection.Target.Value) {
 			a.add(Block, "protected-redirection", "redirect", a.normalizePath(redirection.Target.Value))
 		}
 	}
@@ -506,6 +506,11 @@ func (a *analyzer) inspectPowerShellRemoveItem(command powerShellCommand) {
 }
 
 func (a *analyzer) inspectPowerShellWrites(name string, command powerShellCommand, excluded map[string]bool) {
+	protected := a.protectedPath
+	switch name {
+	case "set-content", "add-content", "out-file", "tee-object", "export-clixml", "export-csv", "clear-content":
+		protected = a.protectedWritePath
+	}
 	values := powerShellPathValues(command, excluded)
 	if len(values) == 0 {
 		a.add(Review, "dynamic-protected-write", name, "dynamic")
@@ -518,7 +523,7 @@ func (a *analyzer) inspectPowerShellWrites(name string, command powerShellComman
 		}
 		if sensitivePowerShellProvider(value.Value) {
 			a.add(Block, "sensitive-system-command", name, value.Value)
-		} else if a.protectedPath(value.Value) {
+		} else if protected(value.Value) {
 			a.add(Block, "guard-self-protection", name, a.normalizePath(value.Value))
 		}
 	}
@@ -528,7 +533,7 @@ func (a *analyzer) inspectPowerShellDestination(name string, command powerShellC
 	if value, ok := powerShellNamedValue(command, "destination"); ok {
 		if !value.Known {
 			a.add(Review, "dynamic-protected-write", name, "dynamic")
-		} else if a.protectedPath(value.Value) {
+		} else if a.protectedWritePath(value.Value) {
 			a.add(Block, "guard-self-protection", name, a.normalizePath(value.Value))
 		}
 		return
@@ -542,7 +547,7 @@ func (a *analyzer) inspectPowerShellDestination(name string, command powerShellC
 	destination := values[len(values)-1]
 	if !destination.Known {
 		a.add(Review, "dynamic-protected-write", name, "dynamic")
-	} else if a.protectedPath(destination.Value) {
+	} else if a.protectedWritePath(destination.Value) {
 		a.add(Block, "guard-self-protection", name, a.normalizePath(destination.Value))
 	}
 }
@@ -556,7 +561,7 @@ func (a *analyzer) inspectPowerShellNamedWrite(name string, command powerShellCo
 		a.add(Review, "dynamic-protected-write", name, "dynamic")
 	} else if sensitivePowerShellProvider(value.Value) {
 		a.add(Block, "sensitive-system-command", name, value.Value)
-	} else if a.protectedPath(value.Value) {
+	} else if a.protectedWritePath(value.Value) {
 		a.add(Block, "guard-self-protection", name, a.normalizePath(value.Value))
 	}
 }
