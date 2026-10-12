@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.1](https://github.com/tomatoaiu/agent-command-guard/compare/v0.10.0...v0.10.1) (2026-10-12)
+
+
+### Bug Fixes
+
+* allow edits to Pi user instructions ([#62](https://github.com/tomatoaiu/agent-command-guard/issues/62)) ([d7cbcb1](https://github.com/tomatoaiu/agent-command-guard/commit/d7cbcb1b7565131d470776f90895d158443b393f))
+
 ## [0.10.0](https://github.com/tomatoaiu/agent-command-guard/compare/v0.9.0...v0.10.0) (2026-09-14)
 
 
